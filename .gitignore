@@ -1,0 +1,14 @@
+.env
+.env.local
+.env.*.local
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+backups/
+tmp/
+supabase/.temp/
+.vite/

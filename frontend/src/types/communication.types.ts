@@ -1,0 +1,4 @@
+export type AnnouncementAudience = 'department' | 'faculty' | 'students' | 'lab_assistants' | 'year' | 'section' | 'assigned_students'
+export interface Announcement { id: string; authorId: string; title: string; message: string; category: string; priority: 'low' | 'normal' | 'high'; audience: AnnouncementAudience; target?: string; publishDate: string; expiryDate?: string; attachment?: string; readBy: string[] }
+export interface Complaint { id: string; studentId: string; category: string; subject: string; description: string; attachment?: string; status: 'submitted' | 'in_review' | 'resolved'; history: Array<{ status: string; actor: string; timestamp: string; response?: string }> }
+export interface InternalMessage { id: string; senderId: string; recipientId: string; message: string; timestamp: string; readBy: string[]; archivedBy: string[] }

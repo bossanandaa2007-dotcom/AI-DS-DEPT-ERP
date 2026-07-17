@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import { PRIVATE_FILE_BUCKET, privateFileRepository, type AttachmentRow as PrivateAttachmentRow, type PrivateFileBucket } from '@/services/supabase/privateFileRepository'
+import { readableSupabaseError } from '@/services/supabase/query'
 import type { Database, Json } from '@/types/database.types'
 
 type Tables = Database['public']['Tables']
@@ -64,10 +65,9 @@ const client = () => {
 function fail(error: { message: string; code?: string } | null, fallback: string): void {
   if (!error) return
   if (error.code === '23505' || /duplicate|unique/i.test(error.message)) throw new Error('A duplicate active record already exists.')
-  if (/row-level|policy|permission|authorized|not allowed/i.test(error.message)) throw new Error('You are not authorized to perform this workflow action.')
   if (/locked|unavailable for transition/i.test(error.message)) throw new Error('This workflow is finalized or locked.')
   if (/invalid request transition/i.test(error.message)) throw new Error('This status transition is not permitted for your role or the current state.')
-  throw new Error(error.message || fallback)
+  throw new Error(readableSupabaseError(error, 'requests and workflow', fallback))
 }
 
 async function currentContext() {

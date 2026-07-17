@@ -37,11 +37,17 @@ export function AppShell() {
   const navigate = useNavigate()
   const { currentUser, logout } = useAuth()
   if (!currentUser) return null
-  const handleLogout = () => { logout(); navigate(ROUTE_PATHS.login, { replace: true }) }
+  const handleLogout = async () => {
+    try {
+      await logout()
+    } finally {
+      navigate(ROUTE_PATHS.login, { replace: true })
+    }
+  }
 
   return <div className="flex min-h-screen bg-background">
     <Sidebar />
     {isDrawerOpen && <div className="fixed inset-0 z-50 lg:hidden"><button aria-label="Close navigation" className="absolute inset-0 bg-text/40" onClick={() => setIsDrawerOpen(false)} /><div className="relative h-full w-[min(18rem,85vw)] bg-surface shadow-xl"><div className="absolute right-3 top-3"><Button aria-label="Close navigation" variant="ghost" className="px-2" onClick={() => setIsDrawerOpen(false)}><X className="size-5" /></Button></div><Sidebar mobile onNavigate={() => setIsDrawerOpen(false)} /></div></div>}
-    <div className="min-w-0 flex-1"><header className="flex h-[var(--header-height)] items-center justify-between border-b border-border bg-surface px-4 sm:px-6"><Button aria-label="Open navigation" variant="ghost" className="px-2 lg:hidden" onClick={() => setIsDrawerOpen(true)}><Menu className="size-5" /></Button><div className="ml-auto flex items-center gap-3"><div className="hidden text-right sm:block"><p className="text-sm font-semibold text-text">{currentUser.name}</p><Badge tone="primary">{ROLE_LABELS[currentUser.role]}</Badge></div><Button variant="ghost" aria-label="Log out" className="px-2" onClick={handleLogout}><LogOut className="size-5" /><span className="hidden sm:inline">Logout</span></Button></div></header><main className="app-container py-6 sm:py-8"><Outlet /></main></div>
+    <div className="min-w-0 flex-1"><header className="flex h-[var(--header-height)] items-center justify-between border-b border-border bg-surface px-4 sm:px-6"><Button aria-label="Open navigation" variant="ghost" className="px-2 lg:hidden" onClick={() => setIsDrawerOpen(true)}><Menu className="size-5" /></Button><div className="ml-auto flex items-center gap-3"><div className="hidden text-right sm:block"><p className="text-sm font-semibold text-text">{currentUser.name}</p><Badge tone="primary">{ROLE_LABELS[currentUser.role]}</Badge></div><Button variant="ghost" aria-label="Log out" className="px-2" onClick={() => void handleLogout()}><LogOut className="size-5" /><span className="hidden sm:inline">Logout</span></Button></div></header><main className="app-container py-6 sm:py-8"><Outlet /></main></div>
   </div>
 }

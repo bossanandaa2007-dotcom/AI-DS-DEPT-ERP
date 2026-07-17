@@ -14,7 +14,7 @@ import { academicRepository } from '@/services/supabase/academicRepository'
 
 export function FacultyJuryEligibilityPanel() {
   const { currentUser } = useAuth()
-  const load = useCallback(() => academicRepository.loadAcademicData(), [])
+  const load = useCallback(() => academicRepository.loadJuryEligibilityData(), [])
   const resource = useAsyncResource(load)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [message, setMessage] = useState('')

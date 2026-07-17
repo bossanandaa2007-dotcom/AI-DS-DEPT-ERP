@@ -1,12 +1,13 @@
 import { supabase } from '@/lib/supabase'
 import { privateFileRepository, PRIVATE_FILE_BUCKET, type AttachmentRow } from '@/services/supabase/privateFileRepository'
+import { readableSupabaseError } from '@/services/supabase/query'
 import type { Database, Json } from '@/types/database.types'
 
 type Tables = Database['public']['Tables']
 type Profile = Pick<Tables['profiles']['Row'], 'id' | 'full_name' | 'role' | 'status' | 'department_id' | 'section_id'>
 type Audience = 'department' | 'faculty' | 'students' | 'lab_assistants' | 'section' | 'assigned_students'
 
-export type OperationsContext = { id: string; role: Database['public']['Enums']['app_role']; department_id: string; section_id: string | null }
+export type OperationsContext = { id: string; role: Database['public']['Enums']['app_role']; department_id: string | null; section_id: string | null }
 export type PortionRecord = Tables['portion_updates']['Row']
 export type AnnouncementRecord = Tables['announcements']['Row'] & { attachments: AttachmentRow[]; readBy: string[] }
 export type ComplaintRecord = Tables['complaints']['Row'] & { attachments: AttachmentRow[] }
@@ -33,8 +34,7 @@ const client = () => {
 const message = (error: { message: string; code?: string } | null, fallback: string) => {
   if (!error) return
   if (error.code === '23505' || /duplicate|unique/i.test(error.message)) throw new Error('A matching record already exists.')
-  if (/policy|permission|not authorized|row-level/i.test(error.message)) throw new Error('You are not authorized to perform this action.')
-  throw new Error(error.message || fallback)
+  throw new Error(readableSupabaseError(error, 'department operations', fallback))
 }
 
 const asAudience = (value: string): Audience => {
@@ -46,10 +46,12 @@ const currentContext = async (): Promise<OperationsContext> => {
   const { data: auth, error: authError } = await client().auth.getUser()
   message(authError, 'Unable to verify your session.')
   if (!auth.user) throw new Error('Please sign in again to continue.')
-  const { data, error } = await client().from('profiles').select('id,role,department_id,section_id').eq('id', auth.user.id).single()
+  const { data, error } = await client().from('profiles').select('id,role,status,department_id,section_id').eq('id', auth.user.id).maybeSingle()
   message(error, 'Unable to load your department context.')
-  if (!data?.department_id) throw new Error('Your profile must be assigned to a department.')
-  return { ...data, department_id: data.department_id }
+  if (!data) throw new Error('Your ERP profile is missing.')
+  if (data.status !== 'active') throw new Error('Your account is inactive.')
+  if (data.role !== 'super_admin' && !data.department_id) throw new Error('Your profile must be assigned to a department.')
+  return { id: data.id, role: data.role, department_id: data.department_id, section_id: data.section_id }
 }
 
 async function attachmentMap(entityType: 'announcement' | 'complaint', entityIds: string[]) {
@@ -95,13 +97,15 @@ async function listAssignments(context: OperationsContext): Promise<AssignmentOp
 export const departmentOperationsRepository = {
   async load(): Promise<OperationsData> {
     const context = await currentContext()
+    const recipientsQuery = client().from('profiles').select('id,full_name,role,status,department_id,section_id').eq('status', 'active').order('full_name')
+    const recipients = context.department_id ? recipientsQuery.eq('department_id', context.department_id) : recipientsQuery
     const [portionsResult, assignments, announcements, complaints, messages, recipientsResult, timetableResult] = await Promise.all([
       client().from('portion_updates').select('*').order('updated_at', { ascending: false }),
       listAssignments(context),
       listAnnouncements(),
       listComplaints(),
       client().from('messages').select('*').order('created_at', { ascending: false }),
-      client().from('profiles').select('id,full_name,role,status,department_id,section_id').eq('department_id', context.department_id).eq('status', 'active').order('full_name'),
+      recipients,
       client().from('timetable_entries').select('*').order('day_of_week').order('period'),
     ])
     message(portionsResult.error, 'Unable to load portion progress.')

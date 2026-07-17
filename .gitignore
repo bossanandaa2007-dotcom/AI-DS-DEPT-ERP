@@ -12,3 +12,8 @@ backups/
 tmp/
 supabase/.temp/
 .vite/
+
+# Local Playwright secrets and reports
+frontend/.env.e2e.local
+frontend/test-results/
+frontend/playwright-report/

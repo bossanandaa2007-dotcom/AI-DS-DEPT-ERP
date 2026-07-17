@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { Eye, EyeOff, LockKeyhole, Mail } from 'lucide-react'
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { z } from 'zod'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -35,8 +35,9 @@ function CollegeMark() {
 }
 
 export function LoginPage() {
-  const { currentUser, login, isRestoring } = useAuth()
+  const { currentUser, login, isRestoring, restorationError, retrySessionRestore } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [mode, setMode] = useState<LoginMode>('staff')
   const [showPassword, setShowPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(false)
@@ -59,8 +60,10 @@ export function LoginPage() {
       return
     }
     try {
-      const user = await login(values.email, values.password)
-      navigate(getDefaultRouteForRole(user.role), { replace: true })
+      const user = await login(values.email, values.password, mode)
+      const defaultRoute = getDefaultRouteForRole(user.role)
+      const requestedPath = typeof location.state === 'object' && location.state && 'from' in location.state && typeof location.state.from === 'string' ? location.state.from : null
+      navigate(requestedPath?.startsWith(defaultRoute) ? requestedPath : defaultRoute, { replace: true })
     } catch (error) {
       setError('root', { message: error instanceof Error ? error.message : 'Unable to sign in.' })
     }
@@ -93,6 +96,7 @@ export function LoginPage() {
 
           <div className="flex items-center justify-between gap-3"><label className="flex cursor-pointer items-center gap-2 text-base text-[#425d85]"><input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} className="size-5 rounded border-[#8090a8] text-[#2450e8] focus:ring-[#2450e8]" />Remember me</label></div>
           {recoveryMessage && <p role="status" className="rounded-md bg-blue-50 px-3 py-2 text-sm leading-5 text-information">{recoveryMessage}</p>}
+          {restorationError && <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-error">{restorationError} <button type="button" className="font-semibold underline" onClick={() => void retrySessionRestore()}>Retry</button></p>}
           {errors.root && <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-error">{errors.root.message}</p>}
           <Button className="min-h-14 w-full rounded-md bg-[#2450e8] text-base hover:bg-[#153ad0]" type="submit" disabled={isSubmitting || isRestoring}>{isRestoring ? 'Restoring session…' : isSubmitting ? 'Signing in…' : 'Sign In'}</Button>
         </form>

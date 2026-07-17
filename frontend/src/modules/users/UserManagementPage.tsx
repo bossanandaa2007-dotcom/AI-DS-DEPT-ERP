@@ -22,7 +22,7 @@ const roles: Database['public']['Enums']['app_role'][] = ['student', 'faculty', 
 const statuses: Database['public']['Enums']['user_status'][] = ['active', 'inactive', 'suspended']
 
 function UserManagementContent() {
-  const load = useCallback(() => academicRepository.loadAcademicData(), []); const resource = useAsyncResource(load); const [query, setQuery] = useState(''); const [role, setRole] = useState('all'); const [editing, setEditing] = useState<Profile | null>(null); const [name, setName] = useState(''); const [status, setStatus] = useState<Database['public']['Enums']['user_status']>('active'); const [departmentId, setDepartmentId] = useState(''); const [saving, setSaving] = useState(false); const [message, setMessage] = useState('')
+  const load = useCallback(() => academicRepository.loadProfileManagementData(), []); const resource = useAsyncResource(load); const [query, setQuery] = useState(''); const [role, setRole] = useState('all'); const [editing, setEditing] = useState<Profile | null>(null); const [name, setName] = useState(''); const [status, setStatus] = useState<Database['public']['Enums']['user_status']>('active'); const [departmentId, setDepartmentId] = useState(''); const [saving, setSaving] = useState(false); const [message, setMessage] = useState('')
   if (resource.isLoading) return <LoadingState label="Loading existing Auth profiles…" />
   if (resource.error) return <ErrorState title="Unable to load profiles" description={resource.error} />
   const data = resource.data; if (!data) return null

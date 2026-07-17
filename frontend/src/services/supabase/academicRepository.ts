@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { readableSupabaseError } from '@/services/supabase/query'
 import type { Database } from '@/types/database.types'
 
 type Table<Name extends keyof Database['public']['Tables']> = Database['public']['Tables'][Name]
@@ -9,13 +10,15 @@ type Update<Name extends keyof Database['public']['Tables']> = Table<Name>['Upda
 export type AcademicData = {
   departments: Row<'departments'>[]; academicYears: Row<'academic_years'>[]; semesters: Row<'semesters'>[]; sections: Row<'sections'>[]; subjects: Row<'subjects'>[]; profiles: Row<'profiles'>[]; enrollments: Row<'enrollments'>[]; assignments: Row<'faculty_assignments'>[]; projects: Row<'projects'>[]; timetable: Row<'timetable_entries'>[]
 }
+export type ProfileManagementData = Pick<AcademicData, 'profiles' | 'departments'>
+export type JuryEligibilityData = Pick<AcademicData, 'profiles' | 'assignments'>
+export type AcademicMasterData = Pick<AcademicData, 'departments' | 'academicYears' | 'semesters' | 'sections' | 'subjects'>
+export type EnrollmentData = Pick<AcademicData, 'profiles' | 'enrollments' | 'departments' | 'academicYears' | 'sections'>
 
 const client = () => { if (!supabase) throw new Error('Supabase is not configured.'); return supabase }
 const fail = (error: { message: string; code?: string } | null, fallback: string) => {
   if (!error) return
-  if (error.code === '23505' || /duplicate|unique constraint/i.test(error.message)) throw new Error('A matching academic record already exists.')
-  if (/policy|permission|authorized/i.test(error.message)) throw new Error('You are not authorized to perform this academic action.')
-  throw new Error(error.message || fallback)
+  throw new Error(readableSupabaseError(error, 'academic data', fallback))
 }
 const datesValid = (starts: string | null | undefined, ends: string | null | undefined) => !starts || !ends || ends > starts
 
@@ -84,6 +87,27 @@ export const academicRepository = {
     return update('subjects', id, value)
   },
   listProfiles: () => list('profiles'), listStudents: async () => (await list('profiles')).filter((profile) => profile.role === 'student'), listFaculty: async () => (await list('profiles')).filter((profile) => profile.role === 'faculty'), updateProfile: (id: string, value: Update<'profiles'>) => update('profiles', id, value), setProfileActiveStatus: (id: string, status: Database['public']['Enums']['user_status']) => update('profiles', id, { status }),
+  async loadProfileManagementData(): Promise<ProfileManagementData> {
+    const [profiles, departments] = await Promise.all([list('profiles'), list('departments')])
+    return { profiles, departments }
+  },
+  async loadJuryEligibilityData(): Promise<JuryEligibilityData> {
+    const [profiles, assignments] = await Promise.all([
+      client().from('profiles').select('*').eq('role', 'faculty').order('full_name'),
+      client().from('faculty_assignments').select('*').eq('is_active', true),
+    ])
+    fail(profiles.error, 'Unable to load Faculty profiles.')
+    fail(assignments.error, 'Unable to load Faculty assignments.')
+    return { profiles: (profiles.data ?? []) as Row<'profiles'>[], assignments: (assignments.data ?? []) as Row<'faculty_assignments'>[] }
+  },
+  async loadAcademicMasterData(): Promise<AcademicMasterData> {
+    const [departments, academicYears, semesters, sections, subjects] = await Promise.all([list('departments'), list('academic_years'), list('semesters'), list('sections'), list('subjects')])
+    return { departments, academicYears, semesters, sections, subjects }
+  },
+  async loadEnrollmentData(): Promise<EnrollmentData> {
+    const [profiles, enrollments, departments, academicYears, sections] = await Promise.all([list('profiles'), list('enrollments'), list('departments'), list('academic_years'), list('sections')])
+    return { profiles, enrollments, departments, academicYears, sections }
+  },
   listEnrollments: () => list('enrollments'),
   async createEnrollment(value: Insert<'enrollments'>) {
     const [profiles, sections, enrollments] = await Promise.all([list('profiles'), list('sections'), list('enrollments')])

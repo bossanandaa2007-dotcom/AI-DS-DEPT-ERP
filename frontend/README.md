@@ -1,6 +1,6 @@
 # AI&DS Department ERP
 
-Production-oriented React frontend for the AI & Data Science Department ERP pilot, backed by Supabase with browser-safe environment variables.
+Production-oriented React frontend for the AI & Data Science Department ERP, backed by Supabase with browser-safe environment variables.
 
 ## Planned roles
 
@@ -36,6 +36,7 @@ Set only `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, and `VITE_DATA_PR
 npm run dev
 npm run build
 npm run lint
+npm run test:e2e
 npm run preview
 ```
 

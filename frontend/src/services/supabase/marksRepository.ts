@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { readableSupabaseError } from '@/services/supabase/query'
 import type { Database, Json } from '@/types/database.types'
 
 type Tables = Database['public']['Tables']
@@ -48,11 +49,10 @@ const client = () => {
 const fail = (error: { message: string; code?: string } | null, fallback: string) => {
   if (!error) return
   if (error.code === '23505' || /duplicate|unique/i.test(error.message)) throw new Error('A matching assessment or mark record already exists.')
-  if (/row-level|policy|permission|authorized/i.test(error.message)) throw new Error('You are not authorized to perform this marks action.')
   if (/finalized|locked/i.test(error.message)) throw new Error('Finalized marks are read-only. Use the correction workflow.')
   if (/maximum_marks|cannot exceed/i.test(error.message)) throw new Error('Obtained marks cannot exceed the assessment maximum.')
   if (/every active student/i.test(error.message)) throw new Error('Enter a mark or Absent for every active enrolled student before finalizing.')
-  throw new Error(error.message || fallback)
+  throw new Error(readableSupabaseError(error, 'marks', fallback))
 }
 
 async function currentUser() {

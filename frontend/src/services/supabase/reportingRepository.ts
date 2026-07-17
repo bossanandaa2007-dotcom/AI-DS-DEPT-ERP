@@ -1,12 +1,13 @@
 import { supabase } from '@/lib/supabase'
 import { ROUTE_PATHS } from '@/app/router/route-paths'
+import { readableSupabaseError } from '@/services/supabase/query'
 import type { DashboardItem, DashboardMetric, RoleDashboardData } from '@/types'
 import type { Database, Json } from '@/types/database.types'
 
 type Tables = Database['public']['Tables']
 type Row<Name extends keyof Tables> = Tables[Name]['Row']
 type Role = Database['public']['Enums']['app_role']
-export type ReportingContext = { id: string; role: Role; departmentId: string; sectionId: string | null }
+export type ReportingContext = { id: string; role: Role; departmentId: string | null; sectionId: string | null }
 export type ReportKind = 'attendance' | 'marks' | 'requests' | 'complaints' | 'workload' | 'portion' | 'audit' | 'administrative'
 export type ReportFilters = { fromDate: string; toDate: string; departmentId: string; sectionId: string; subjectId: string; userId: string; status: string }
 export type ReportRow = { id: string; reference: string; metric: string; value: string; state: string; detail: string }
@@ -39,10 +40,9 @@ export type ReportingData = {
 }
 
 const client = () => { if (!supabase) throw new Error('Supabase is not configured.'); return supabase }
-const fail = (error: { message: string } | null, fallback: string) => {
+const fail = (error: { message: string; code?: string; status?: number } | null, resource: string, operation: string) => {
   if (!error) return
-  if (/policy|permission|authorized|row-level/i.test(error.message)) throw new Error('You are not authorized to load this reporting data.')
-  throw new Error(error.message || fallback)
+  throw new Error(readableSupabaseError(error, resource, operation))
 }
 const percent = (part: number, whole: number) => whole ? Math.round((part / whole) * 100) : null
 const displayPercent = (part: number, whole: number) => { const value = percent(part, whole); return value === null ? '—' : `${value}%` }
@@ -58,11 +58,19 @@ const safeMetadata = (value: Json | null) => {
 }
 
 async function context(): Promise<ReportingContext> {
-  const { data: auth, error: authError } = await client().auth.getUser(); fail(authError, 'Unable to verify your session.')
+  const { data: auth, error: authError } = await client().auth.getUser(); fail(authError, 'session', 'verify')
   if (!auth.user) throw new Error('Please sign in again to continue.')
-  const { data, error } = await client().from('profiles').select('id,role,department_id,section_id').eq('id', auth.user.id).single(); fail(error, 'Unable to load your profile.')
-  if (!data?.department_id) throw new Error('Your profile requires a department before reports can be loaded.')
+  const { data, error } = await client().from('profiles').select('id,role,status,department_id,section_id').eq('id', auth.user.id).maybeSingle(); fail(error, 'profile', 'load reporting context')
+  if (!data) throw new Error('Your ERP profile is missing.')
+  if (data.status !== 'active') throw new Error('Your account is inactive.')
+  if (data.role !== 'super_admin' && !data.department_id) throw new Error('Your profile requires a department before reports can be loaded.')
   return { id: data.id, role: data.role, departmentId: data.department_id, sectionId: data.section_id }
+}
+
+function optionalRows<Name extends keyof Tables>(result: { data: unknown; error: { message: string; code?: string; status?: number } | null }, resource: string): Row<Name>[] {
+  if (!result.error) return (result.data ?? []) as Row<Name>[]
+  if (import.meta.env.DEV) console.warn(readableSupabaseError(result.error, resource, 'load optional dashboard data'))
+  return []
 }
 
 const name = (data: ReportingData, id: string | null | undefined, fallback = 'Restricted profile') => data.profiles.find((profile) => profile.id === id)?.full_name ?? fallback
@@ -78,9 +86,7 @@ export const reportingRepository = {
     const [profiles, departments, academicYears, sections, subjects, enrollments, assignments, timetable, sessions, attendance, staffAttendance, assessments, marks, attendanceCorrections, markCorrections, requests, portions, complaints, announcements, projects, competitions, attachments, auditLogs] = await Promise.all([
       client().from('profiles').select('*'), client().from('departments').select('*'), client().from('academic_years').select('*'), client().from('sections').select('*'), client().from('subjects').select('*'), client().from('enrollments').select('*'), client().from('faculty_assignments').select('*'), client().from('timetable_entries').select('*'), client().from('attendance_sessions').select('*'), client().from('attendance_records').select('*'), client().from('staff_attendance').select('*'), client().from('assessments').select('*'), client().from('marks').select('*'), client().from('attendance_corrections').select('*'), client().from('mark_corrections').select('*'), client().from('requests').select('*'), client().from('portion_updates').select('*'), client().from('complaints').select('*'), client().from('announcements').select('*'), client().from('projects').select('*'), client().from('competitions').select('*'), client().from('attachments').select('*'), client().from('audit_logs').select('*').order('created_at', { ascending: false }).limit(100),
     ])
-    const results = [profiles, departments, academicYears, sections, subjects, enrollments, assignments, timetable, sessions, attendance, staffAttendance, assessments, marks, attendanceCorrections, markCorrections, requests, portions, complaints, announcements, projects, competitions, attachments, auditLogs]
-    results.forEach((result) => fail(result.error, 'Unable to load reporting data.'))
-    return { context: user, profiles: profiles.data ?? [], departments: departments.data ?? [], academicYears: academicYears.data ?? [], sections: sections.data ?? [], subjects: subjects.data ?? [], enrollments: enrollments.data ?? [], assignments: assignments.data ?? [], timetable: timetable.data ?? [], sessions: sessions.data ?? [], attendance: attendance.data ?? [], staffAttendance: staffAttendance.data ?? [], assessments: assessments.data ?? [], marks: marks.data ?? [], attendanceCorrections: attendanceCorrections.data ?? [], markCorrections: markCorrections.data ?? [], requests: requests.data ?? [], portions: portions.data ?? [], complaints: complaints.data ?? [], announcements: announcements.data ?? [], projects: projects.data ?? [], competitions: competitions.data ?? [], attachments: attachments.data ?? [], auditLogs: auditLogs.data ?? [] }
+    return { context: user, profiles: optionalRows<'profiles'>(profiles, 'profiles'), departments: optionalRows<'departments'>(departments, 'departments'), academicYears: optionalRows<'academic_years'>(academicYears, 'academic years'), sections: optionalRows<'sections'>(sections, 'sections'), subjects: optionalRows<'subjects'>(subjects, 'subjects'), enrollments: optionalRows<'enrollments'>(enrollments, 'enrollments'), assignments: optionalRows<'faculty_assignments'>(assignments, 'faculty assignments'), timetable: optionalRows<'timetable_entries'>(timetable, 'timetable'), sessions: optionalRows<'attendance_sessions'>(sessions, 'attendance sessions'), attendance: optionalRows<'attendance_records'>(attendance, 'attendance records'), staffAttendance: optionalRows<'staff_attendance'>(staffAttendance, 'staff attendance'), assessments: optionalRows<'assessments'>(assessments, 'assessments'), marks: optionalRows<'marks'>(marks, 'marks'), attendanceCorrections: optionalRows<'attendance_corrections'>(attendanceCorrections, 'attendance corrections'), markCorrections: optionalRows<'mark_corrections'>(markCorrections, 'mark corrections'), requests: optionalRows<'requests'>(requests, 'requests'), portions: optionalRows<'portion_updates'>(portions, 'portion updates'), complaints: optionalRows<'complaints'>(complaints, 'complaints'), announcements: optionalRows<'announcements'>(announcements, 'announcements'), projects: optionalRows<'projects'>(projects, 'projects'), competitions: optionalRows<'competitions'>(competitions, 'competitions'), attachments: optionalRows<'attachments'>(attachments, 'attachments'), auditLogs: optionalRows<'audit_logs'>(auditLogs, 'audit logs') }
   },
 
   dashboard(data: ReportingData): RoleDashboardData {
@@ -122,7 +128,7 @@ export const reportingRepository = {
   },
 
   rows(data: ReportingData, kind: ReportKind, filters: ReportFilters): ReportRow[] {
-    data = filters.departmentId || data.context.role === 'hod' ? scopedDepartment(data, filters.departmentId || data.context.departmentId) : data
+    data = filters.departmentId || (data.context.role === 'hod' && data.context.departmentId) ? scopedDepartment(data, filters.departmentId || data.context.departmentId!) : data
     const filterCommon = (sectionId: string | null, subjectId: string | null, userId: string | null, status: string, date: string) => dateInRange(date, filters) && (!filters.sectionId || sectionId === filters.sectionId) && (!filters.subjectId || subjectId === filters.subjectId) && (!filters.userId || userId === filters.userId) && (!filters.status || status === filters.status)
     if (kind === 'attendance') return data.sessions.filter((session) => filterCommon(session.section_id, session.subject_id, null, session.status, session.attendance_date) && (!filters.userId || session.faculty_id === filters.userId || data.attendance.some((record) => record.session_id === session.id && record.student_id === filters.userId))).map((session) => { const records = data.attendance.filter((record) => record.session_id === session.id); const summary = recordAttendance(records); return { id: session.id, reference: `${session.attendance_date} · ${subjectName(data, session.subject_id)}`, metric: `${sectionName(data, session.section_id)} · ${name(data, session.faculty_id)}`, value: displayPercent(summary.present, summary.total), state: session.status, detail: `${summary.present}/${summary.total} present or late` } })
     if (kind === 'marks') return data.assessments.filter((assessment) => filterCommon(assessment.section_id, assessment.subject_id, null, assessment.status, assessment.assessment_date) && (!filters.userId || assessment.faculty_id === filters.userId || data.marks.some((mark) => mark.assessment_id === assessment.id && mark.student_id === filters.userId))).map((assessment) => { const values = data.marks.filter((mark) => mark.assessment_id === assessment.id && !mark.absent && mark.obtained_marks !== null).map((mark) => Number(mark.obtained_marks)); const average = values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null; return { id: assessment.id, reference: assessment.title, metric: `${subjectName(data, assessment.subject_id)} · ${sectionName(data, assessment.section_id)}`, value: average === null ? '—' : `${average}/${assessment.maximum_marks}`, state: assessment.status, detail: values.length ? `High ${Math.max(...values)} · Low ${Math.min(...values)} · Pass ${values.filter((value) => value >= Number(assessment.maximum_marks) * 0.5).length}/${values.length}` : 'No recorded marks' } })

@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { readableSupabaseError } from '@/services/supabase/query'
 import type { Database, Json } from '@/types/database.types'
 
 type Tables = Database['public']['Tables']
@@ -32,9 +33,8 @@ const client = () => { if (!supabase) throw new Error('Supabase is not configure
 const message = (error: { message: string; code?: string } | null, fallback: string) => {
   if (!error) return
   if (error.code === '23505' || /duplicate|unique/i.test(error.message)) throw new Error('This attendance entry already exists.')
-  if (/row-level|policy|permission|authorized/i.test(error.message)) throw new Error('You are not authorized to perform this attendance action.')
   if (/finalized|locked/i.test(error.message)) throw new Error('Finalized attendance is locked. Submit or approve a correction instead.')
-  throw new Error(error.message || fallback)
+  throw new Error(readableSupabaseError(error, 'attendance', fallback))
 }
 async function currentUser() {
   const { data, error } = await client().auth.getUser()
@@ -103,19 +103,10 @@ export const attendanceRepository = {
   },
 
   async studentDailyCheckIn(sessionId: string): Promise<AttendanceRecordRow> {
-    const user = await currentUser()
-    const checkedInAt = new Date().toISOString()
-    const verification: Json = { source: 'student_check_in', verification_state: 'pending', submitted_at: checkedInAt }
-    const { data, error } = await client().from('attendance_records').insert({
-      session_id: sessionId,
-      student_id: user.id,
-      status: 'present',
-      check_in_time: checkedInAt,
-      verification_data: verification,
-    }).select().single()
+    const { data, error } = await client().rpc('student_daily_check_in' as never, { p_session_id: sessionId } as never)
     message(error, 'Unable to record the student check-in.')
     if (!data) throw new Error('Unable to record the student check-in.')
-    return data
+    return data as AttendanceRecordRow
   },
 
   async saveAttendanceRecord(session: AttendanceSessionRow, studentId: string, status: AttendanceStatus): Promise<void> {

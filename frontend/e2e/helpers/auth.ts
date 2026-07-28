@@ -22,7 +22,7 @@ export const accounts: TestAccount[] = [
 export async function login(page: Page, account: TestAccount) {
   await page.goto('/login')
   if (account.portal === 'student') await page.getByRole('button', { name: /Student.*student login/i }).click()
-  await page.locator('#login-email').fill(account.email)
+  await page.getByLabel('User ID or Admin Email').fill(account.email)
   const passwordInput = page.locator('#login-password')
   await passwordInput.fill(account.password())
   await page.getByRole('button', { name: 'Sign In' }).click()

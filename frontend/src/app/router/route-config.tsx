@@ -1,22 +1,31 @@
 import { ArrowLeft, CircleAlert, ShieldAlert } from 'lucide-react'
-import { Link, type RouteObject } from 'react-router-dom'
+import { Link, Navigate, type RouteObject } from 'react-router-dom'
 
 import { ROUTE_PATHS } from '@/app/router/route-paths'
 import { USER_ROLES } from '@/constants/roles'
 import { AppShell } from '@/layouts/AppShell'
+import { AdminDashboardPage } from '@/modules/dashboard/AdminDashboardPage'
 import { RoleDashboardPage } from '@/modules/dashboard/RoleDashboardPage'
 import { LoginPage } from '@/modules/auth/LoginPage'
 import { HomeRedirect, JuryEligibleRoute, ProtectedRoleRoute } from '@/modules/auth/RouteGuards'
 import { AcademicSetupPage } from '@/modules/academics/AcademicSetupPage'
 import { SubjectAllocationPage } from '@/modules/academics/SubjectAllocationPage'
+import { FacultyWorkloadPage } from '@/modules/academics/FacultyWorkloadPage'
+import { AdminTimetablePage } from '@/modules/timetable/AdminTimetablePage'
 import { TimetablePage } from '@/modules/timetable/TimetablePage'
-import { UserManagementPage } from '@/modules/users/UserManagementPage'
+import { UserCategoryPage, UserManagementPage } from '@/modules/users/UserManagementPage'
+import { AdminAttendancePage } from '@/modules/attendance/AdminAttendancePage'
 import { AttendancePage } from '@/modules/attendance/AttendancePage'
+import { AdminMarksPage } from '@/modules/marks/AdminMarksPage'
 import { MarksPage } from '@/modules/marks/MarksPage'
+import { AdminRequestsPage } from '@/modules/requests/AdminRequestsPage'
 import { RequestsPage } from '@/modules/requests/RequestsPage'
 import { CommunicationPage } from '@/modules/communication/CommunicationPage'
+import { StudentComplaintsPage } from '@/modules/communication/StudentComplaintsPage'
 import { PortionCompletionPage } from '@/modules/portion-completion/PortionCompletionPage'
 import { ReportsPage } from '@/modules/reports/ReportsPage'
+import { AdminReportsPage } from '@/modules/reports/AdminReportsPage'
+import { AdminAuditPage } from '@/modules/audit/AdminAuditPage'
 import { AuditPage } from '@/modules/audit/AuditPage'
 import { DocumentReviewQueuePage, ReviewerAssignmentPage, StudentDocumentStatusPage } from '@/modules/document-reviews/DocumentReviewsPage'
 
@@ -31,10 +40,10 @@ export const routeConfig: RouteObject[] = [
   { path: ROUTE_PATHS.login, element: <LoginPage /> },
   { path: ROUTE_PATHS.unauthorized, element: <MessagePage title="Access unavailable" message="Your current role does not have access to that area." icon={ShieldAlert} /> },
   { path: ROUTE_PATHS.notFound, element: <MessagePage title="Page not found" message="The requested page does not exist." icon={CircleAlert} /> },
-  roleRoute(ROUTE_PATHS.superAdmin, USER_ROLES.superAdmin, [{ path: 'users', element: <UserManagementPage /> }, { path: 'academic-setup', element: <AcademicSetupPage /> }, { path: 'subject-allocation', element: <SubjectAllocationPage /> }, { path: 'timetable', element: <TimetablePage /> }, { path: 'attendance', element: <AttendancePage /> }, { path: 'announcements', element: <CommunicationPage /> }, { path: 'audit', element: <AuditPage /> }, { path: 'reports', element: <ReportsPage /> }, { path: 'document-review-assignments', element: <ReviewerAssignmentPage /> }]),
-  roleRoute(ROUTE_PATHS.hod, USER_ROLES.hod, [{ path: 'faculty-profiles', element: <UserManagementPage /> }, { path: 'academic-setup', element: <AcademicSetupPage /> }, { path: 'subject-allocation', element: <SubjectAllocationPage /> }, { path: 'timetable', element: <TimetablePage /> }, { path: 'attendance', element: <AttendancePage /> }, { path: 'marks', element: <MarksPage /> }, { path: 'requests', element: <RequestsPage /> }, { path: 'portion-progress', element: <PortionCompletionPage /> }, { path: 'announcements', element: <CommunicationPage /> }, { path: 'audit', element: <AuditPage /> }, { path: 'reports', element: <ReportsPage /> }, { path: 'document-review-assignments', element: <ReviewerAssignmentPage /> }]),
+  roleRoute(ROUTE_PATHS.superAdmin, USER_ROLES.superAdmin, [{ path: 'dashboard', element: <AdminDashboardPage /> }, { path: 'users', element: <UserManagementPage /> }, { path: 'users/:category', element: <UserCategoryPage /> }, { path: 'academic-setup', element: <AcademicSetupPage /> }, { path: 'subject-allocation', element: <SubjectAllocationPage /> }, { path: 'faculty-workload', element: <FacultyWorkloadPage /> }, { path: 'timetable', element: <AdminTimetablePage /> }, { path: 'attendance', element: <AdminAttendancePage /> }, { path: 'marks', element: <AdminMarksPage /> }, { path: 'requests', element: <AdminRequestsPage /> }, { path: 'announcements', element: <CommunicationPage /> }, { path: 'audit', element: <AdminAuditPage /> }, { path: 'reports', element: <AdminReportsPage /> }, { path: 'document-review-assignments', element: <ReviewerAssignmentPage /> }]),
+  roleRoute(ROUTE_PATHS.hod, USER_ROLES.hod, [{ path: 'faculty-profiles', element: <UserManagementPage /> }, { path: 'academic-setup', element: <AcademicSetupPage /> }, { path: 'faculty-workload', element: <FacultyWorkloadPage /> }, { path: 'timetable', element: <TimetablePage /> }, { path: 'attendance', element: <AttendancePage /> }, { path: 'marks', element: <MarksPage /> }, { path: 'requests', element: <RequestsPage /> }, { path: 'portion-progress', element: <PortionCompletionPage /> }, { path: 'announcements', element: <CommunicationPage /> }, { path: 'audit', element: <AuditPage /> }, { path: 'reports', element: <ReportsPage /> }, { path: 'document-review-assignments', element: <ReviewerAssignmentPage /> }]),
   roleRoute(ROUTE_PATHS.faculty, USER_ROLES.faculty, [{ path: 'timetable', element: <TimetablePage /> }, { path: 'attendance', element: <AttendancePage /> }, { path: 'marks', element: <MarksPage /> }, { path: 'requests', element: <RequestsPage /> }, { path: 'portion-completion', element: <PortionCompletionPage /> }, { path: 'announcements', element: <CommunicationPage /> }, { path: 'document-reviews', element: <DocumentReviewQueuePage stage="faculty" /> }, { path: 'jury-reviews', element: <JuryEligibleRoute />, children: [{ index: true, element: <DocumentReviewQueuePage stage="jury" /> }] }]),
   roleRoute(ROUTE_PATHS.labAssistant, USER_ROLES.labAssistant, [{ path: 'lab-timetable', element: <TimetablePage /> }, { path: 'attendance', element: <AttendancePage /> }, { path: 'leave', element: <RequestsPage /> }, { path: 'announcements', element: <CommunicationPage /> }]),
-  roleRoute(ROUTE_PATHS.student, USER_ROLES.student, [{ path: 'timetable', element: <TimetablePage /> }, { path: 'attendance', element: <AttendancePage /> }, { path: 'marks', element: <MarksPage /> }, { path: 'requests', element: <RequestsPage /> }, { path: 'projects-and-od', element: <RequestsPage /> }, { path: 'announcements', element: <CommunicationPage /> }, { path: 'complaints', element: <CommunicationPage /> }, { path: 'document-status', element: <StudentDocumentStatusPage /> }]),
+  roleRoute(ROUTE_PATHS.student, USER_ROLES.student, [{ path: 'timetable', element: <TimetablePage /> }, { path: 'attendance', element: <AttendancePage /> }, { path: 'marks', element: <MarksPage /> }, { path: 'requests', element: <RequestsPage /> }, { path: 'projects-and-od', element: <Navigate replace to={ROUTE_PATHS.studentRequests} /> }, { path: 'projects', element: <Navigate replace to={ROUTE_PATHS.studentRequests} /> }, { path: 'od', element: <Navigate replace to={ROUTE_PATHS.studentRequests} /> }, { path: 'announcements', element: <CommunicationPage /> }, { path: 'complaints', element: <StudentComplaintsPage /> }, { path: 'document-status', element: <StudentDocumentStatusPage /> }]),
   { path: '*', element: <MessagePage title="Page not found" message="The requested page does not exist." icon={CircleAlert} /> },
 ]

@@ -4,8 +4,11 @@ import { readableSupabaseError } from '@/services/supabase/query'
 import type { Database, Json } from '@/types/database.types'
 
 type Tables = Database['public']['Tables']
-type Profile = Pick<Tables['profiles']['Row'], 'id' | 'full_name' | 'role' | 'status' | 'department_id' | 'section_id'>
+type Profile = Pick<Tables['profiles']['Row'], 'id' | 'full_name' | 'employee_or_register_number' | 'role' | 'status' | 'department_id' | 'section_id'>
+type Subject = Pick<Tables['subjects']['Row'], 'id' | 'code' | 'name'>
+type Section = Pick<Tables['sections']['Row'], 'id' | 'name' | 'year_number'>
 type Audience = 'department' | 'faculty' | 'students' | 'lab_assistants' | 'section' | 'assigned_students'
+type AppRole = Database['public']['Enums']['app_role']
 
 export type OperationsContext = { id: string; role: Database['public']['Enums']['app_role']; department_id: string | null; section_id: string | null }
 export type PortionRecord = Tables['portion_updates']['Row']
@@ -14,6 +17,7 @@ export type ComplaintRecord = Tables['complaints']['Row'] & { attachments: Attac
 export type MessageRecord = Tables['messages']['Row']
 export type AuditLogRecord = Tables['audit_logs']['Row']
 export type AssignmentOption = { id: string; subjectId: string; sectionId: string; label: string }
+export type ComplaintAssigneeProfile = Pick<Profile, 'role' | 'status'>
 
 export type OperationsData = {
   context: OperationsContext
@@ -23,6 +27,9 @@ export type OperationsData = {
   complaints: ComplaintRecord[]
   messages: MessageRecord[]
   recipients: Profile[]
+  profiles: Profile[]
+  subjects: Subject[]
+  sections: Section[]
   timetable: Tables['timetable_entries']['Row'][]
 }
 
@@ -41,6 +48,10 @@ const asAudience = (value: string): Audience => {
   if (value === 'department' || value === 'faculty' || value === 'students' || value === 'lab_assistants' || value === 'section' || value === 'assigned_students') return value
   throw new Error('This announcement audience is not supported by the live access policy.')
 }
+
+export const COMPLAINT_ASSIGNEE_ROLES = ['super_admin', 'hod', 'faculty', 'lab_assistant'] as const satisfies readonly AppRole[]
+const complaintAssigneeRoleSet = new Set<AppRole>(COMPLAINT_ASSIGNEE_ROLES)
+export const isComplaintAssigneeProfile = (profile: ComplaintAssigneeProfile) => profile.status === 'active' && complaintAssigneeRoleSet.has(profile.role)
 
 const currentContext = async (): Promise<OperationsContext> => {
   const { data: auth, error: authError } = await client().auth.getUser()
@@ -94,25 +105,60 @@ async function listAssignments(context: OperationsContext): Promise<AssignmentOp
   })
 }
 
+async function validateLabAssistantAnnouncementTarget(context: OperationsContext, audience: Audience, target: Json) {
+  if (context.role !== 'lab_assistant') return
+  if (!context.department_id) throw new Error('Your profile must be assigned to a department before publishing announcements.')
+  if (!['department', 'section', 'assigned_students'].includes(audience)) throw new Error('Lab Assistants can publish only to their department, assigned sections, or assigned students.')
+  if (audience === 'department') return
+  const { data: timetable, error: timetableError } = await client().from('timetable_entries').select('section_id').eq('lab_assistant_id', context.id).eq('is_active', true)
+  message(timetableError, 'Unable to verify your assigned lab sections.')
+  const sectionIds = new Set((timetable ?? []).map((entry) => entry.section_id))
+  if (!sectionIds.size) throw new Error('No active lab sections are assigned to your profile.')
+  if (audience === 'section') {
+    const sectionId = typeof target === 'object' && target !== null && !Array.isArray(target) && typeof target.section_id === 'string' ? target.section_id : ''
+    if (!sectionIds.has(sectionId)) throw new Error('Choose one of your assigned lab sections.')
+    return
+  }
+  const profileIds = typeof target === 'object' && target !== null && !Array.isArray(target) && Array.isArray(target.profile_ids) ? target.profile_ids.filter((id): id is string => typeof id === 'string') : []
+  if (!profileIds.length) throw new Error('Provide at least one assigned student profile ID.')
+  const { data: students, error: studentError } = await client().from('profiles').select('id,section_id,role,status,department_id').in('id', profileIds)
+  message(studentError, 'Unable to verify assigned student recipients.')
+  const permitted = new Set((students ?? []).filter((profile) => profile.role === 'student' && profile.status === 'active' && profile.department_id === context.department_id && profile.section_id && sectionIds.has(profile.section_id)).map((profile) => profile.id))
+  if (profileIds.some((id) => !permitted.has(id))) throw new Error('Assigned-student announcements can target only active students in your assigned lab sections.')
+}
+
+async function validateComplaintAssignee(assigneeId: string | null, complaintDepartmentId: string) {
+  if (!assigneeId) return
+  const { data: assignee, error } = await client().from('profiles').select('id,role,status,department_id').eq('id', assigneeId).maybeSingle()
+  message(error, 'Unable to verify the complaint assignee.')
+  if (!assignee || !isComplaintAssigneeProfile(assignee) || (assignee.role !== 'super_admin' && assignee.department_id !== complaintDepartmentId)) throw new Error('Complaints can be assigned only to active HOD, Faculty, Lab Assistant, or Admin users in the complaint department.')
+}
+
 export const departmentOperationsRepository = {
   async load(): Promise<OperationsData> {
     const context = await currentContext()
-    const recipientsQuery = client().from('profiles').select('id,full_name,role,status,department_id,section_id').eq('status', 'active').order('full_name')
+    const recipientsQuery = client().from('profiles').select('id,full_name,employee_or_register_number,role,status,department_id,section_id').eq('status', 'active').order('full_name')
     const recipients = context.department_id ? recipientsQuery.eq('department_id', context.department_id) : recipientsQuery
-    const [portionsResult, assignments, announcements, complaints, messages, recipientsResult, timetableResult] = await Promise.all([
+    const [portionsResult, assignments, announcements, complaints, messages, recipientsResult, profilesResult, subjectsResult, sectionsResult, timetableResult] = await Promise.all([
       client().from('portion_updates').select('*').order('updated_at', { ascending: false }),
       listAssignments(context),
       listAnnouncements(),
       listComplaints(),
       client().from('messages').select('*').order('created_at', { ascending: false }),
       recipients,
+      client().from('profiles').select('id,full_name,employee_or_register_number,role,status,department_id,section_id'),
+      client().from('subjects').select('id,code,name'),
+      client().from('sections').select('id,name,year_number'),
       client().from('timetable_entries').select('*').order('day_of_week').order('period'),
     ])
     message(portionsResult.error, 'Unable to load portion progress.')
     message(messages.error, 'Unable to load messages.')
     message(recipientsResult.error, 'Unable to load available message recipients.')
+    message(profilesResult.error, 'Unable to load user names.')
+    message(subjectsResult.error, 'Unable to load subject names.')
+    message(sectionsResult.error, 'Unable to load section names.')
     message(timetableResult.error, 'Unable to load timetable entries.')
-    return { context, portions: portionsResult.data ?? [], assignments, announcements, complaints, messages: messages.data ?? [], recipients: recipientsResult.data ?? [], timetable: timetableResult.data ?? [] }
+    return { context, portions: portionsResult.data ?? [], assignments, announcements, complaints, messages: messages.data ?? [], recipients: recipientsResult.data ?? [], profiles: profilesResult.data ?? [], subjects: subjectsResult.data ?? [], sections: sectionsResult.data ?? [], timetable: timetableResult.data ?? [] }
   },
 
   async savePortion(input: { timetableEntryId: string; subjectId: string; sectionId: string; unit: string; plannedTopic: string; completedTopic: string; completionPercentage: number; nextTopic: string }) {
@@ -142,7 +188,7 @@ export const departmentOperationsRepository = {
 
   async saveAnnouncement(input: { id?: string; title: string; message: string; category: string; priority: 'low' | 'normal' | 'high'; audience: string; targetId: string; publishDate: string; expiryDate: string; file: File | null }) {
     const context = await currentContext()
-    if (!['super_admin', 'hod', 'faculty'].includes(context.role)) throw new Error('Your role cannot publish announcements.')
+    if (!['super_admin', 'hod', 'faculty', 'lab_assistant'].includes(context.role)) throw new Error('Your role cannot publish announcements.')
     const audience = asAudience(input.audience)
     if (context.role === 'faculty' && audience !== 'assigned_students') throw new Error('Faculty announcements must be addressed to assigned students.')
     if (!input.title.trim() || !input.message.trim() || !input.category.trim()) throw new Error('Title, message, and category are required.')
@@ -150,6 +196,7 @@ export const departmentOperationsRepository = {
     if (input.expiryDate && input.expiryDate < input.publishDate) throw new Error('Expiry date must be on or after the publish date.')
     const target: Json = audience === 'section' ? { section_id: input.targetId.trim() } : audience === 'assigned_students' ? { profile_ids: input.targetId.split(',').map((id) => id.trim()).filter(Boolean) } : {}
     if ((audience === 'section' || audience === 'assigned_students') && !input.targetId.trim()) throw new Error('Provide the required section or recipient profile ID for this audience.')
+    await validateLabAssistantAnnouncementTarget(context, audience, target)
     const payload = { author_id: context.id, department_id: context.department_id as string, title: input.title.trim(), message: input.message.trim(), category: input.category.trim(), priority: input.priority, audience, target, publish_date: input.publishDate, expiry_date: input.expiryDate || null }
     let announcementId = input.id
     if (announcementId) {
@@ -184,10 +231,12 @@ export const departmentOperationsRepository = {
     const context = await currentContext()
     if (context.role !== 'super_admin' && context.role !== 'hod') throw new Error('Only department administrators can review complaints.')
     if (!input.response.trim()) throw new Error('Add a response before changing complaint status.')
-    const { data: current, error: currentError } = await client().from('complaints').select('status').eq('id', input.id).single()
+    const { data: current, error: currentError } = await client().from('complaints').select('status,department_id').eq('id', input.id).single()
     message(currentError, 'Unable to load the complaint.')
     if (!current) throw new Error('Complaint was not found.')
     if (current.status === 'resolved') throw new Error('Resolved complaints are read-only.')
+    if (context.role === 'hod' && current.department_id !== context.department_id) throw new Error('You can review only complaints in your department.')
+    await validateComplaintAssignee(input.assignedTo, current.department_id)
     const { error } = await client().from('complaints').update({ status: input.status, response: input.response.trim(), assigned_to: input.assignedTo }).eq('id', input.id)
     message(error, 'Unable to update the complaint.')
   },
@@ -218,7 +267,7 @@ export const departmentOperationsRepository = {
     if (context.role !== 'super_admin' && context.role !== 'hod') throw new Error('Audit activity is available only to department administrators.')
     const [logsResult, profilesResult] = await Promise.all([
       client().from('audit_logs').select('*').order('created_at', { ascending: false }),
-      client().from('profiles').select('id,full_name,role,status,department_id,section_id'),
+      client().from('profiles').select('id,full_name,employee_or_register_number,role,status,department_id,section_id'),
     ])
     message(logsResult.error, 'Unable to load audit activity.')
     message(profilesResult.error, 'Unable to load audit actors.')

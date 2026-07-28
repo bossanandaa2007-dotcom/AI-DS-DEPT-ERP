@@ -14,6 +14,9 @@ export type SectionRow = Tables['sections']['Row']
 export type AssessmentType = Database['public']['Enums']['assessment_type']
 
 export interface MarksData {
+  departments: Tables['departments']['Row'][]
+  academicYears: Tables['academic_years']['Row'][]
+  semesters: Tables['semesters']['Row'][]
   assessments: AssessmentRow[]
   marks: MarkRow[]
   corrections: MarkCorrectionRow[]
@@ -90,7 +93,10 @@ async function verifyAssignment(userId: string, sectionId: string, subjectId: st
 
 export const marksRepository = {
   async loadMarksData(): Promise<MarksData> {
-    const [assessments, marks, corrections, profiles, enrollments, assignments, subjects, sections] = await Promise.all([
+    const [departments, academicYears, semesters, assessments, marks, corrections, profiles, enrollments, assignments, subjects, sections] = await Promise.all([
+      selectAll('departments'),
+      selectAll('academic_years'),
+      selectAll('semesters'),
       selectAll('assessments'),
       selectAll('marks'),
       selectAll('mark_corrections'),
@@ -100,7 +106,7 @@ export const marksRepository = {
       selectAll('subjects'),
       selectAll('sections'),
     ])
-    return { assessments, marks, corrections, profiles, enrollments, assignments, subjects, sections }
+    return { departments, academicYears, semesters, assessments, marks, corrections, profiles, enrollments, assignments, subjects, sections }
   },
 
   async saveAssessment(input: AssessmentInput): Promise<AssessmentRow> {

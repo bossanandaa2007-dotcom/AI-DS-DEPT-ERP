@@ -28,7 +28,7 @@ Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Set only `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, and `VITE_DATA_PROVIDER=supabase` in `.env.local`. Never put service-role keys, database passwords, JWT secrets, or CLI tokens in Vite variables.
+Set only `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_AUTH_EMAIL_DOMAIN`, and `VITE_DATA_PROVIDER=supabase` in `.env.local`. Never put service-role keys, database passwords, JWT secrets, or CLI tokens in Vite variables.
 
 ## Commands
 

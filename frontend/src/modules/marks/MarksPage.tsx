@@ -48,6 +48,29 @@ interface AssessmentContext {
   subjectId: string
 }
 
+interface HodAssessmentRow {
+  id: string
+  assessment: AssessmentRow
+  students: number
+  entered: number
+  absent: number
+  missing: number
+  average: number | null
+}
+
+interface HodStudentMarkRow {
+  id: string
+  student: string
+  registerNumber: string
+  section: string
+  assessment: string
+  subject: string
+  faculty: string
+  score: string
+  percentage: number | null
+  status: AssessmentRow['status']
+}
+
 export function MarksPage() {
   const { currentUser } = useAuth()
   const load = useCallback(() => marksRepository.loadMarksData(), [])
@@ -236,6 +259,7 @@ function StudentMarks({ data, reload, userId }: ViewProps) {
   const [feedback, setFeedback] = useState<FeedbackValue | null>(null)
   const pendingMarkIds = new Set(data.corrections.filter((row) => row.status === 'pending').map((row) => row.mark_id))
   const scored = assessments.map((assessment) => ({ assessment, mark: data.marks.find((row) => row.assessment_id === assessment.id && row.student_id === userId) }))
+  const markRows = scored.map((row) => ({ id: row.assessment.id, ...row }))
   const percentages = scored.filter((row) => row.mark && !row.mark.absent).map((row) => (Number(row.mark?.obtained_marks ?? 0) / row.assessment.maximum_marks) * 100)
   const average = percentages.length ? Math.round(percentages.reduce((sum, value) => sum + value, 0) / percentages.length) : null
 
@@ -263,12 +287,12 @@ function StudentMarks({ data, reload, userId }: ViewProps) {
     <PageHeader title="My marks" description="Finalized personal assessment marks and correction history from live academic records." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />
     {feedback && <Feedback value={feedback} />}
     <div className="grid gap-4 sm:grid-cols-2"><Summary label="Finalized assessments" value={assessments.length} large /><Summary label="Average scored percentage" value={average === null ? '—' : `${average}%`} large /></div>
-    <Card><h2 className="font-bold text-text">Personal assessment marks</h2><div className="mt-4"><DataTable rows={scored.map((row) => ({ id: row.assessment.id, ...row }))} empty={<EmptyState title="No finalized marks available" />} columns={[
+    <Card><h2 className="font-bold text-text">Personal assessment marks</h2><div className="mt-4 hidden md:block"><DataTable rows={markRows} empty={<EmptyState title="No finalized marks available" />} columns={[
       { header: 'Assessment', render: (row) => <div><p className="font-semibold">{row.assessment.title}</p><p className="text-xs text-muted">{subjectName(data, row.assessment.subject_id)} · {row.assessment.assessment_date}</p></div> },
       { header: 'Mark', render: (row) => row.mark ? row.mark.absent ? 'Absent' : `${row.mark.obtained_marks} / ${row.assessment.maximum_marks}` : 'Not entered' },
       { header: 'Percentage', render: (row) => row.mark && !row.mark.absent ? `${Math.round((Number(row.mark.obtained_marks) / row.assessment.maximum_marks) * 100)}%` : '—' },
       { header: 'Correction', render: (row) => !row.mark ? <span className="text-muted">Unavailable</span> : pendingMarkIds.has(row.mark.id) ? <Badge tone="warning">Pending</Badge> : <Button className="min-h-8 px-3" variant="secondary" onClick={() => openCorrection(row.mark!)}>Request</Button> },
-    ]} /></div></Card>
+    ]} /></div><div className="mt-4 grid gap-3 md:hidden">{markRows.length ? markRows.map((row) => <StudentMarkCard key={row.id} row={row} data={data} pendingMarkIds={pendingMarkIds} onCorrection={openCorrection} />) : <EmptyState title="No finalized marks available" />}</div></Card>
     <CorrectionHistory data={data} corrections={data.corrections.filter((row) => row.student_id === userId)} />
     <Modal isOpen={Boolean(target)} title="Request mark correction" onClose={() => setTarget(null)}>
       <label className="block text-sm font-semibold">Requested state<Select className="mt-1" value={absent ? 'absent' : 'mark'} onChange={(event) => setAbsent(event.target.value === 'absent')}><option value="mark">Corrected mark</option><option value="absent">Absent</option></Select></label>
@@ -279,13 +303,39 @@ function StudentMarks({ data, reload, userId }: ViewProps) {
   </div>
 }
 
-function HodMarks({ data, reload }: ViewProps) {
+function HodMarks({ data, reload, userId }: ViewProps) {
+  const [yearId, setYearId] = useState('all')
+  const [sectionId, setSectionId] = useState('all')
   const [subjectFilter, setSubjectFilter] = useState('all')
-  const filtered = data.assessments.filter((row) => subjectFilter === 'all' || row.subject_id === subjectFilter)
-  const corrections = data.corrections.slice().sort((a, b) => b.created_at.localeCompare(a.created_at))
+  const [facultyId, setFacultyId] = useState('all')
+  const [studentId, setStudentId] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const hodProfile = data.profiles.find((profile) => profile.id === userId)
+  const departmentId = hodProfile?.department_id ?? data.sections[0]?.department_id
+  const departmentSections = data.sections.filter((section) => !departmentId || section.department_id === departmentId)
+  const filteredSections = departmentSections.filter((section) => yearId === 'all' || section.academic_year_id === yearId)
+  const sectionIds = new Set(filteredSections.map((section) => section.id))
+  const assessments = data.assessments.filter((assessment) => sectionIds.has(assessment.section_id) && (sectionId === 'all' || assessment.section_id === sectionId) && (subjectFilter === 'all' || assessment.subject_id === subjectFilter) && (facultyId === 'all' || assessment.faculty_id === facultyId) && (statusFilter === 'all' || assessment.status === statusFilter))
+  const filtered = assessments
+  const assessmentRows = buildHodAssessmentRows(data, assessments)
+  const studentRows = buildHodStudentMarkRows(data, assessments).filter((row) => studentId === 'all' || row.id.startsWith(`${studentId}-`))
+  const corrections = data.corrections.filter((correction) => {
+    const mark = data.marks.find((row) => row.id === correction.mark_id)
+    return assessments.some((assessment) => assessment.id === mark?.assessment_id)
+  }).sort((a, b) => b.created_at.localeCompare(a.created_at))
+  const enteredMarks = data.marks.filter((mark) => assessments.some((assessment) => assessment.id === mark.assessment_id))
+  const scored = enteredMarks.filter((mark) => !mark.absent && mark.obtained_marks !== null)
+  const average = scored.length ? scored.reduce((sum, mark) => {
+    const assessment = assessments.find((row) => row.id === mark.assessment_id)
+    return sum + (assessment ? (Number(mark.obtained_marks) / Number(assessment.maximum_marks)) * 100 : 0)
+  }, 0) / scored.length : null
+  const departmentSubjects = data.subjects.filter((subject) => !departmentId || subject.department_id === departmentId)
+  const departmentFaculty = data.profiles.filter((profile) => (profile.role === 'faculty' || profile.role === 'hod') && (!departmentId || profile.department_id === departmentId))
+  const departmentStudents = data.profiles.filter((profile) => profile.role === 'student' && profile.status === 'active' && data.enrollments.some((enrollment) => enrollment.student_id === profile.id && enrollment.status === 'active' && sectionIds.has(enrollment.section_id)))
   return <div className="space-y-6">
-    <PageHeader title="Department marks overview" description="Department-wide assessment, completion, locking, and correction visibility enforced by RLS." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />
-    <div className="grid gap-4 sm:grid-cols-3"><Summary label="Assessments" value={data.assessments.length} large /><Summary label="Finalized" value={data.assessments.filter((row) => row.status === 'finalized').length} large /><Summary label="Pending corrections" value={data.corrections.filter((row) => row.status === 'pending').length} large /></div>
+    <PageHeader title="Department marks overview" description="Department-wide marks by year, section, subject, faculty, student, assessment status, and correction history." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />
+    <Card><div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6"><label className="text-xs font-semibold text-muted">Year<Select className="mt-1" value={yearId} onChange={(event) => { setYearId(event.target.value); setSectionId('all') }}><option value="all">All years</option>{data.academicYears.filter((year) => !departmentId || year.department_id === departmentId).map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}</Select></label><label className="text-xs font-semibold text-muted">Section<Select className="mt-1" value={sectionId} onChange={(event) => setSectionId(event.target.value)}><option value="all">All sections</option>{filteredSections.map((section) => <option key={section.id} value={section.id}>Year {section.year_number} · {section.name}</option>)}</Select></label><label className="text-xs font-semibold text-muted">Subject<Select className="mt-1" value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}><option value="all">All subjects</option>{departmentSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.code} · {subject.name}</option>)}</Select></label><label className="text-xs font-semibold text-muted">Faculty<Select className="mt-1" value={facultyId} onChange={(event) => setFacultyId(event.target.value)}><option value="all">All faculty</option>{departmentFaculty.map((profile) => <option key={profile.id} value={profile.id}>{profile.full_name}</option>)}</Select></label><label className="text-xs font-semibold text-muted">Student<Select className="mt-1" value={studentId} onChange={(event) => setStudentId(event.target.value)}><option value="all">All students</option>{departmentStudents.map((profile) => <option key={profile.id} value={profile.id}>{profile.employee_or_register_number ?? 'No ID'} · {profile.full_name}</option>)}</Select></label><label className="text-xs font-semibold text-muted">Status<Select className="mt-1" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="draft">Draft</option><option value="completed">Completed</option><option value="finalized">Finalized</option></Select></label></div></Card>
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5"><Summary label="Assessments" value={assessments.length} large /><Summary label="Finalized" value={assessments.filter((row) => row.status === 'finalized').length} large /><Summary label="Entered marks" value={enteredMarks.length} large /><Summary label="Average score" value={average === null ? '—' : `${average.toFixed(1)}%`} large /><Summary label="Pending corrections" value={corrections.filter((row) => row.status === 'pending').length} large /></div>
     <Card><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-text">Department assessments</h2><p className="text-sm text-muted">HOD has reporting visibility; direct mark entry remains assignment-restricted.</p></div><Select className="w-full sm:w-64" value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}><option value="all">All subjects</option>{data.subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.code} · {subject.name}</option>)}</Select></div><div className="mt-4"><DataTable rows={filtered} empty={<EmptyState title="No assessments match this filter" />} columns={[
       { header: 'Assessment', render: (row) => <div><p className="font-semibold">{row.title}</p><p className="text-xs text-muted">{readable(row.assessment_type)} · {row.assessment_date}</p></div> },
       { header: 'Subject / section', render: (row) => `${subjectName(data, row.subject_id)} · ${sectionName(data, row.section_id)}` },
@@ -293,8 +343,55 @@ function HodMarks({ data, reload }: ViewProps) {
       { header: 'Records', render: (row) => data.marks.filter((mark) => mark.assessment_id === row.id).length },
       { header: 'Status', render: (row) => <Badge tone={tone(row.status)}>{readable(row.status)}</Badge> },
     ]} /></div></Card>
+    <Card><h2 className="font-bold text-text">Assessment totals</h2><div className="mt-4"><DataTable rows={assessmentRows} empty={<EmptyState title="No assessments match these filters" />} columns={[
+      { header: 'Assessment', render: (row) => <div><p className="font-semibold">{row.assessment.title}</p><p className="text-xs text-muted">{readable(row.assessment.assessment_type)} · {row.assessment.assessment_date}</p></div> },
+      { header: 'Subject / section', render: (row) => `${subjectName(data, row.assessment.subject_id)} · ${sectionName(data, row.assessment.section_id)}` },
+      { header: 'Faculty', render: (row) => profileName(data, row.assessment.faculty_id) },
+      { header: 'Max', render: (row) => row.assessment.maximum_marks },
+      { header: 'Entered', render: (row) => row.entered },
+      { header: 'Absent', render: (row) => row.absent },
+      { header: 'Missing', render: (row) => row.missing },
+      { header: 'Average', render: (row) => row.average === null ? '—' : `${row.average.toFixed(1)}%` },
+      { header: 'Status', render: (row) => <Badge tone={tone(row.assessment.status)}>{readable(row.assessment.status)}</Badge> },
+    ]} /></div></Card>
+    <Card><h2 className="font-bold text-text">Student mark records</h2><div className="mt-4"><DataTable rows={studentRows} empty={<EmptyState title="No student mark records match these filters" />} columns={[
+      { header: 'Student', render: (row) => <div><p className="font-semibold">{row.student}</p><p className="text-xs text-muted">{row.registerNumber || 'No register number'}</p></div> },
+      { header: 'Section', render: (row) => row.section },
+      { header: 'Assessment', render: (row) => <div><p>{row.assessment}</p><p className="text-xs text-muted">{row.subject}</p></div> },
+      { header: 'Faculty', render: (row) => row.faculty },
+      { header: 'Score', render: (row) => row.score },
+      { header: 'Percentage', render: (row) => row.percentage === null ? '—' : `${row.percentage.toFixed(1)}%` },
+      { header: 'Status', render: (row) => <Badge tone={tone(row.status)}>{readable(row.status)}</Badge> },
+    ]} /></div></Card>
     <CorrectionReview data={data} corrections={corrections} reload={reload} reviewer="hod" />
   </div>
+}
+
+function buildHodAssessmentRows(data: MarksData, assessments: AssessmentRow[]): HodAssessmentRow[] {
+  return assessments.map((assessment) => {
+    const students = activeStudents(data, assessment.section_id)
+    const marks = data.marks.filter((mark) => mark.assessment_id === assessment.id)
+    const scored = marks.filter((mark) => !mark.absent && mark.obtained_marks !== null)
+    const average = scored.length ? scored.reduce((sum, mark) => sum + (Number(mark.obtained_marks) / Number(assessment.maximum_marks)) * 100, 0) / scored.length : null
+    return { id: assessment.id, assessment, students: students.length, entered: marks.length, absent: marks.filter((mark) => mark.absent).length, missing: Math.max(0, students.length - marks.length), average }
+  })
+}
+
+function buildHodStudentMarkRows(data: MarksData, assessments: AssessmentRow[]): HodStudentMarkRow[] {
+  return assessments.flatMap((assessment) => activeStudents(data, assessment.section_id).map((student) => {
+    const mark = data.marks.find((row) => row.assessment_id === assessment.id && row.student_id === student.id)
+    const percent = mark && !mark.absent && mark.obtained_marks !== null ? (Number(mark.obtained_marks) / Number(assessment.maximum_marks)) * 100 : null
+    return { id: `${student.id}-${assessment.id}`, student: student.full_name, registerNumber: student.employee_or_register_number ?? '', section: sectionName(data, assessment.section_id), assessment: assessment.title, subject: subjectName(data, assessment.subject_id), faculty: profileName(data, assessment.faculty_id), score: mark ? mark.absent ? 'Absent' : `${mark.obtained_marks} / ${assessment.maximum_marks}` : 'Not entered', percentage: percent, status: assessment.status }
+  })).sort((first, second) => `${first.section}-${first.student}-${first.assessment}`.localeCompare(`${second.section}-${second.student}-${second.assessment}`))
+}
+
+function StudentMarkCard({ row, data, pendingMarkIds, onCorrection }: { row: { id: string; assessment: AssessmentRow; mark?: MarkRow }; data: MarksData; pendingMarkIds: Set<string>; onCorrection: (mark: MarkRow) => void }) {
+  const percent = row.mark && !row.mark.absent ? `${Math.round((Number(row.mark.obtained_marks) / row.assessment.maximum_marks) * 100)}%` : '-'
+  return <article className="rounded-lg border border-border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h3 className="break-words font-bold text-text">{row.assessment.title}</h3><p className="mt-1 text-xs text-muted">{subjectName(data, row.assessment.subject_id)} - {row.assessment.assessment_date}</p></div><Badge tone={row.mark ? 'success' : 'muted'}>{row.mark ? row.mark.absent ? 'Absent' : percent : 'Not entered'}</Badge></div><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><MiniStat label="Mark" value={row.mark ? row.mark.absent ? 'Absent' : `${row.mark.obtained_marks} / ${row.assessment.maximum_marks}` : 'Unavailable'} /><MiniStat label="Percentage" value={percent} /></div><div className="mt-4">{!row.mark ? <span className="text-sm text-muted">Correction unavailable</span> : pendingMarkIds.has(row.mark.id) ? <Badge tone="warning">Pending correction</Badge> : <Button className="min-h-8 px-3" variant="secondary" onClick={() => onCorrection(row.mark!)}>Request correction</Button>}</div></article>
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return <div><p className="text-xs font-semibold uppercase text-muted">{label}</p><p className="font-medium text-text">{value}</p></div>
 }
 
 function CorrectionReview({ data, corrections, reload, reviewer }: { data: MarksData; corrections: MarkCorrectionRow[]; reload: () => Promise<void>; reviewer: 'faculty' | 'hod' }) {
@@ -335,7 +432,8 @@ function CorrectionReview({ data, corrections, reload, reviewer }: { data: Marks
 }
 
 function CorrectionHistory({ data, corrections }: { data: MarksData; corrections: MarkCorrectionRow[] }) {
-  return <Card><h2 className="font-bold text-text">Correction history</h2><div className="mt-4"><DataTable rows={corrections.slice().sort((a, b) => b.created_at.localeCompare(a.created_at))} empty={<EmptyState title="No mark correction requests" />} columns={[
+  const rows = corrections.slice().sort((a, b) => b.created_at.localeCompare(a.created_at))
+  return <Card><h2 className="font-bold text-text">Correction history</h2><div className="mt-4 hidden md:block"><DataTable rows={rows} empty={<EmptyState title="No mark correction requests" />} columns={[
     { header: 'Assessment', render: (row) => {
       const mark = data.marks.find((item) => item.id === row.mark_id)
       return data.assessments.find((item) => item.id === mark?.assessment_id)?.title ?? 'Assessment unavailable'
@@ -344,7 +442,13 @@ function CorrectionHistory({ data, corrections }: { data: MarksData; corrections
     { header: 'Status', render: (row) => <Badge tone={tone(row.status)}>{row.status}</Badge> },
     { header: 'Timeline', render: (row) => <div><p>{new Date(row.created_at).toLocaleString()}</p><p className="text-xs text-muted">{row.reviewed_at ? `Reviewed ${new Date(row.reviewed_at).toLocaleString()}` : 'Awaiting review'}</p></div> },
     { header: 'Comments', render: (row) => row.reviewer_comments ?? '—' },
-  ]} /></div></Card>
+  ]} /></div><div className="mt-4 grid gap-3 md:hidden">{rows.length ? rows.map((row) => <CorrectionHistoryCard key={row.id} row={row} data={data} />) : <EmptyState title="No mark correction requests" />}</div></Card>
+}
+
+function CorrectionHistoryCard({ row, data }: { row: MarkCorrectionRow; data: MarksData }) {
+  const mark = data.marks.find((item) => item.id === row.mark_id)
+  const assessment = data.assessments.find((item) => item.id === mark?.assessment_id)
+  return <article className="rounded-lg border border-border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold text-text">{assessment?.title ?? 'Assessment unavailable'}</h3><p className="mt-1 text-xs text-muted">{new Date(row.created_at).toLocaleString()}</p></div><Badge tone={tone(row.status)}>{row.status}</Badge></div><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><MiniStat label="Change" value={`${row.original_marks ?? 'Absent'} -> ${row.requested_marks ?? 'Absent'}`} /><MiniStat label="Review" value={row.reviewed_at ? new Date(row.reviewed_at).toLocaleDateString() : 'Awaiting'} /></div>{row.reviewer_comments && <p className="mt-3 text-sm text-muted">{row.reviewer_comments}</p>}</article>
 }
 
 function ClassTeacherView({ data, assessments }: { data: MarksData; assessments: AssessmentRow[] }) {

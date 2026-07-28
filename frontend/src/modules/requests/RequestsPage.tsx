@@ -34,6 +34,9 @@ import {
 import type { Json } from '@/types/database.types'
 
 const studentTypes: RequestType[] = ['student_leave', 'gate_pass', 'od']
+type StudentTab = 'all' | 'student_leave' | 'gate_pass' | 'od' | 'project' | 'competition'
+type StudentWorkflowItem = { id: string; kind: StudentTab; title: string; summary: string; status: string; submitted: string; updated: string; stage: string; request?: RequestRow; project?: ProjectRow; competition?: CompetitionRow; attachments: AttachmentRow[] }
+const studentTabs: { value: StudentTab; label: string }[] = [{ value: 'all', label: 'All' }, { value: 'student_leave', label: 'Leave' }, { value: 'gate_pass', label: 'Gate Pass' }, { value: 'od', label: 'OD' }, { value: 'project', label: 'Projects' }, { value: 'competition', label: 'Competitions' }]
 const projectStatuses = ['proposed', 'active', 'completed', 'archived']
 const competitionTypes = ['hackathon', 'paper_presentation', 'coding', 'project_expo', 'other']
 const competitionLevels = ['department', 'college', 'state', 'national', 'international']
@@ -79,6 +82,7 @@ export function RequestsPage() {
 }
 
 function StudentWorkspace({ data, reload, userId }: ViewProps) {
+  const [tab, setTab] = useState<StudentTab>('all')
   const [requestOpen, setRequestOpen] = useState(false)
   const [form, setForm] = useState<RequestFormState>(() => emptyRequest('student_leave'))
   const [file, setFile] = useState<File | null>(null)
@@ -89,10 +93,17 @@ function StudentWorkspace({ data, reload, userId }: ViewProps) {
   const [pass, setPass] = useState<RequestRow | null>(null)
   const [preview, setPreview] = useState<AttachmentRow | null>(null)
   const requests = data.requests.filter((row) => row.requester_id === userId).sort((a, b) => b.created_at.localeCompare(a.created_at))
+  const studentProjectIds = new Set(data.projectMembers.filter((row) => row.student_id === userId).map((row) => row.project_id))
+  const projects = data.projects.filter((row) => studentProjectIds.has(row.id))
+  const competitions = data.competitions.filter((row) => jsonStringArray(row.details, 'participant_ids').includes(userId))
+  const items = studentWorkflowItems(data, requests, projects, competitions)
+  const visibleItems = tab === 'all' ? items : items.filter((item) => item.kind === tab)
 
   const submit = async () => {
     setSaving(true); setFeedback(null)
     try {
+      const duplicate = requests.some((request) => request.request_type === form.requestType && ['draft', 'submitted', 'class_teacher_approved', 'faculty_approved', 'provisional_approved', 'certificate_pending', 'certificate_verified'].includes(request.status) && request.from_date && request.to_date && request.from_date <= form.toDate && request.to_date >= form.fromDate)
+      if (duplicate) throw new Error('An overlapping active request already exists.')
       await requestWorkflowRepository.createRequest({
         requestType: form.requestType,
         reason: form.reason,
@@ -121,12 +132,11 @@ function StudentWorkspace({ data, reload, userId }: ViewProps) {
   }
 
   return <div className="space-y-6">
-    <PageHeader title="Leave, gate pass, projects and OD" description="Personal requests, secure document verification, projects, competitions, and complete OD tracking." actions={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button><Button onClick={() => setRequestOpen(true)}><Plus className="size-4" /> New request</Button></div>} />
+    <PageHeader title="Student requests" description="Leave, gate pass, OD, project, and competition workflows in one place." actions={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button><Button onClick={() => setRequestOpen(true)}><Plus className="size-4" /> New request</Button></div>} />
     {feedback && <Feedback value={feedback} />}
-    <RequestTable data={data} requests={requests} title="My request history" onPreview={setPreview} action={(request) => <StudentRequestActions request={request} data={data} setPass={setPass} setCertificateRequest={setCertificateRequest} setPreview={setPreview} />} />
-    <ProjectsTable data={data} userId={userId} />
-    <CompetitionsTable data={data} />
-    <RequestDialog isOpen={requestOpen} form={form} setForm={setForm} file={file} setFile={setFile} saving={saving} projects={data.projects} competitions={data.competitions} onClose={() => setRequestOpen(false)} onSubmit={submit} />
+    <StudentSummary items={items} />
+    <Card><div className="mb-4 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">{studentTabs.map((item) => <Button key={item.value} className="px-3" variant={tab === item.value ? 'primary' : 'secondary'} onClick={() => setTab(item.value)}>{item.label}</Button>)}</div><div className="space-y-3"><StudentWorkflowList data={data} items={visibleItems} onPreview={setPreview} actions={(request) => <StudentRequestActions request={request} data={data} setPass={setPass} setCertificateRequest={setCertificateRequest} setPreview={setPreview} />} /></div></Card>
+    <RequestDialog isOpen={requestOpen} form={form} setForm={setForm} file={file} setFile={setFile} saving={saving} projects={projects} competitions={competitions} onClose={() => setRequestOpen(false)} onSubmit={submit} />
     <CertificateDialog request={certificateRequest} file={certificate} setFile={setCertificate} saving={saving} onClose={() => setCertificateRequest(null)} onSubmit={uploadCertificate} />
     <GatePassDialog request={pass} onClose={() => setPass(null)} />
     {preview && <SecurePreview key={preview.id} attachment={preview} onClose={() => setPreview(null)} />}
@@ -280,6 +290,21 @@ function HodWorkspace({ data, reload, userId }: ViewProps) {
   </div>
 }
 
+function StudentSummary({ items }: { items: StudentWorkflowItem[] }) {
+  const active = items.filter((item) => ['submitted', 'class_teacher_approved', 'faculty_approved', 'provisional_approved', 'certificate_pending', 'certificate_verified', 'proposed', 'active'].includes(item.status)).length
+  const done = items.filter((item) => ['hod_approved', 'finalized', 'completed', 'certificate_verified'].includes(item.status)).length
+  return <div className="grid gap-3 sm:grid-cols-3"><Card className="p-4"><p className="text-xs font-semibold uppercase text-muted">Total</p><p className="mt-1 text-2xl font-bold text-text">{items.length}</p></Card><Card className="p-4"><p className="text-xs font-semibold uppercase text-muted">Active</p><p className="mt-1 text-2xl font-bold text-warning">{active}</p></Card><Card className="p-4"><p className="text-xs font-semibold uppercase text-muted">Completed</p><p className="mt-1 text-2xl font-bold text-success">{done}</p></Card></div>
+}
+
+function StudentWorkflowList({ data, items, onPreview, actions }: { data: RequestWorkflowData; items: StudentWorkflowItem[]; onPreview: (attachment: AttachmentRow) => void; actions: (request: RequestRow) => React.ReactNode }) {
+  if (!items.length) return <EmptyState title="No matching workflows" description="Your Leave, Gate Pass, OD, Project, and Competition records will appear here." />
+  return <div className="grid gap-3 lg:grid-cols-2">{items.map((item) => <article key={item.id} className="rounded-lg border border-border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><p className="font-bold text-text">{item.title}</p><p className="mt-1 text-sm text-muted">{item.summary}</p></div><Badge tone={tone(item.status)}>{display(item.status)}</Badge></div><div className="mt-4 grid gap-3 text-sm sm:grid-cols-3"><Meta label="Submitted" value={item.submitted} /><Meta label="Reviewer stage" value={item.stage} /><Meta label="Last update" value={item.updated} /></div><div className="mt-4"><p className="mb-2 text-xs font-semibold uppercase text-muted">Approval history</p>{item.request ? <HistorySummary data={data} requestId={item.request.id} /> : <span className="text-xs text-muted">{item.kind === 'project' ? `Guide: ${item.project?.faculty_guide_id ? profileName(data, item.project.faculty_guide_id) : 'Unassigned'}` : 'Participation record maintained by department.'}</span>}</div><div className="mt-4 flex flex-wrap items-center gap-2"><AttachmentButtons attachments={item.attachments} onPreview={onPreview} />{item.request && actions(item.request)}</div></article>)}</div>
+}
+
+function Meta({ label, value }: { label: string; value: string }) {
+  return <div><p className="text-xs font-semibold uppercase text-muted">{label}</p><p className="font-medium text-text">{value}</p></div>
+}
+
 function RequestTable({ data, requests, title, onPreview, action }: { data: RequestWorkflowData; requests: RequestRow[]; title: string; onPreview: (attachment: AttachmentRow) => void; action?: (request: RequestRow) => React.ReactNode }) {
   return <Card><h2 className="font-bold text-text">{title}</h2><div className="mt-4"><DataTable rows={requests} empty={<EmptyState title="No requests found" />} columns={[
     { header: 'Request', render: (request) => <div><p className="font-semibold">{requestTitle(request)}</p><p className="text-xs text-muted">{display(request.request_type)} · {request.from_date ?? '—'} to {request.to_date ?? '—'}</p></div> },
@@ -410,6 +435,60 @@ function requiredOdAttachment(data: RequestWorkflowData, request: RequestRow) {
 
 function rejectionReason(data: RequestWorkflowData, requestId: string) {
   return data.history.filter((row) => row.request_id === requestId && row.comments).sort((a, b) => b.created_at.localeCompare(a.created_at))[0]?.comments ?? ''
+}
+
+function studentWorkflowItems(data: RequestWorkflowData, requests: RequestRow[], projects: ProjectRow[], competitions: CompetitionRow[]): StudentWorkflowItem[] {
+  const requestItems: StudentWorkflowItem[] = requests.map((request) => ({
+    id: request.id,
+    kind: request.request_type === 'student_leave' ? 'student_leave' : request.request_type === 'gate_pass' ? 'gate_pass' : 'od',
+    title: requestTitle(request),
+    summary: `${display(request.request_type)} - ${request.from_date ?? '-'} to ${request.to_date ?? '-'}`,
+    status: request.status,
+    submitted: dateText(request.created_at),
+    updated: dateText(request.updated_at),
+    stage: reviewerStage(request),
+    request,
+    attachments: data.attachments.filter((attachment) => attachment.entity_id === request.id && attachment.is_active),
+  }))
+  const projectItems: StudentWorkflowItem[] = projects.map((project) => ({
+    id: project.id,
+    kind: 'project',
+    title: project.name,
+    summary: project.description,
+    status: project.status,
+    submitted: dateText(project.created_at),
+    updated: dateText(project.updated_at),
+    stage: project.faculty_guide_id ? `Faculty Guide - ${profileName(data, project.faculty_guide_id)}` : 'Faculty Guide pending',
+    project,
+    attachments: [],
+  }))
+  const competitionItems: StudentWorkflowItem[] = competitions.map((competition) => ({
+    id: competition.id,
+    kind: 'competition',
+    title: competition.name,
+    summary: `${competition.organizer} - ${competition.venue ?? 'Venue pending'} - ${competition.event_date}`,
+    status: textDetail(competition.details, 'level') || 'registered',
+    submitted: dateText(competition.created_at),
+    updated: dateText(competition.updated_at),
+    stage: 'Department maintained',
+    competition,
+    attachments: [],
+  }))
+  return [...requestItems, ...projectItems, ...competitionItems].sort((a, b) => b.updated.localeCompare(a.updated))
+}
+
+function reviewerStage(request: RequestRow) {
+  if (request.status === 'submitted') return request.request_type === 'od' ? 'Faculty document review' : 'Class Teacher review'
+  if (request.status === 'class_teacher_approved' || request.status === 'faculty_approved' || request.status === 'certificate_verified') return 'HOD review'
+  if (request.status === 'provisional_approved') return 'Student certificate upload'
+  if (request.status === 'certificate_pending') return 'Certificate verification'
+  if (['hod_approved', 'finalized'].includes(request.status)) return 'Completed'
+  if (['rejected', 'faculty_rejected', 'hod_rejected'].includes(request.status)) return 'Rejected'
+  return display(request.status)
+}
+
+function dateText(value: string | null) {
+  return value ? new Date(value).toLocaleDateString() : '-'
 }
 
 function requestTitle(request: RequestRow) {

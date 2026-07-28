@@ -7,7 +7,7 @@ import type { AppUser } from '@/types'
 interface AuthContextValue {
   currentUser: AppUser | null
   isRestoring: boolean
-  login: (email: string, password: string, portal: import('@/services/supabase/authService').LoginPortal) => Promise<AppUser>
+  login: (userId: string, password: string, portal: import('@/services/supabase/authService').LoginPortal) => Promise<AppUser>
   logout: () => Promise<void>
   restorationError: string | null
   retrySessionRestore: () => Promise<void>
@@ -67,10 +67,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
     } catch { /* The scheduled restore reports Supabase configuration failures. */ }
     return () => { window.clearTimeout(restoreTimer); mounted.current = false; unsubscribe() }
   }, [restoreSession])
-  const login = useCallback(async (email: string, password: string, portal: import('@/services/supabase/authService').LoginPortal) => {
+  const login = useCallback(async (userId: string, password: string, portal: import('@/services/supabase/authService').LoginPortal) => {
     loginInProgress.current = true
     try {
-      const user = await supabaseAuthService.login(email, password, portal)
+      const user = await supabaseAuthService.login(userId, password, portal)
       setCurrentUser(user)
       setRestorationError(null)
       return user

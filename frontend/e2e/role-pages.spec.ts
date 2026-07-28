@@ -6,7 +6,7 @@ const pages: Record<string, string[]> = {
   hod: ['', 'faculty-profiles', 'academic-setup', 'subject-allocation', 'timetable', 'attendance', 'marks', 'requests', 'portion-progress', 'announcements', 'document-review-assignments', 'audit', 'reports'],
   faculty: ['', 'timetable', 'attendance', 'marks', 'requests', 'portion-completion', 'document-reviews', 'announcements'],
   lab_assistant: ['', 'lab-timetable', 'attendance', 'leave', 'announcements'],
-  student: ['', 'timetable', 'attendance', 'marks', 'requests', 'projects-and-od', 'document-status', 'announcements', 'complaints'],
+  student: ['', 'timetable', 'attendance', 'marks', 'requests', 'document-status', 'announcements', 'complaints'],
 }
 
 for (const role of ['super_admin', 'hod', 'faculty', 'lab_assistant', 'student'] as const) {
@@ -20,6 +20,24 @@ for (const role of ['super_admin', 'hod', 'faculty', 'lab_assistant', 'student']
     }
   })
 }
+
+test('student legacy project and OD routes redirect to requests', async ({ page }) => {
+  const student = accounts.find((account) => account.role === 'student')!
+  await login(page, student)
+  for (const segment of ['projects-and-od', 'projects', 'od']) {
+    await page.goto(`${student.route}/${segment}`)
+    await expect(page).toHaveURL(/\/student\/requests$/)
+  }
+})
+
+test('hod cannot access admin user profile routes', async ({ page }) => {
+  const hod = accounts.find((account) => account.role === 'hod')!
+  await login(page, hod)
+  for (const route of ['/super-admin/users', '/super-admin/users/hods']) {
+    await page.goto(route)
+    await expect(page).toHaveURL(/\/unauthorized$/)
+  }
+})
 
 test('jury eligibility controls jury route', async ({ page }) => {
   const jury = accounts.find((account) => account.email === 'jury@vernex.in')!

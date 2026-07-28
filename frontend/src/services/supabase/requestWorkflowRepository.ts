@@ -18,6 +18,9 @@ export type RequestType = Database['public']['Enums']['request_type']
 export type RequestStatus = Database['public']['Enums']['request_status']
 
 export interface RequestWorkflowData {
+  departments: Tables['departments']['Row'][]
+  academicYears: Tables['academic_years']['Row'][]
+  semesters: Tables['semesters']['Row'][]
   requests: RequestRow[]
   history: RequestHistoryRow[]
   projects: ProjectRow[]
@@ -144,7 +147,10 @@ async function validateProjectMembers(memberIds: string[], departmentId: string)
 
 export const requestWorkflowRepository = {
   async loadData(): Promise<RequestWorkflowData> {
-    const [requests, history, projects, projectMembers, competitions, attachments, profiles, enrollments, assignments, sections] = await Promise.all([
+    const [departments, academicYears, semesters, requests, history, projects, projectMembers, competitions, attachments, profiles, enrollments, assignments, sections] = await Promise.all([
+      selectAll('departments'),
+      selectAll('academic_years'),
+      selectAll('semesters'),
       selectAll('requests'),
       selectAll('request_history'),
       selectAll('projects'),
@@ -156,7 +162,7 @@ export const requestWorkflowRepository = {
       selectAll('faculty_assignments'),
       selectAll('sections'),
     ])
-    return { requests, history, projects, projectMembers, competitions, attachments, profiles, enrollments, assignments, sections }
+    return { departments, academicYears, semesters, requests, history, projects, projectMembers, competitions, attachments, profiles, enrollments, assignments, sections }
   },
 
   async createRequest(input: RequestInput, file?: File): Promise<RequestRow> {

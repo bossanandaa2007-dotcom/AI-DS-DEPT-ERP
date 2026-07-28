@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { Eye, EyeOff, LockKeyhole, Mail } from 'lucide-react'
+import { Eye, EyeOff, LockKeyhole, UserRound } from 'lucide-react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { z } from 'zod'
 import { Button } from '@/components/ui/Button'
@@ -11,21 +11,21 @@ import { useAuth } from '@/modules/auth/useAuth'
 const brandingAssets = import.meta.glob('../../assets/branding/*', { eager: true, import: 'default', query: '?url' }) as Record<string, string>
 const collegeLogo = brandingAssets['../../assets/branding/kcg-college-logo.png']
 const departmentLogo = brandingAssets['../../assets/branding/aids-department-logo.png']
-const loginSchema = z.object({ email: z.string().email('Enter a valid email address.'), password: z.string().min(1, 'Enter your password.') })
+const loginSchema = z.object({ userId: z.string().trim().min(1, 'Enter your User ID or Admin Email.').refine((value) => value.includes('@') ? z.email().safeParse(value).success : /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(value), 'Enter a valid User ID / Register Number or Admin Email.'), password: z.string().min(1, 'Enter your password.') })
 type LoginValues = z.infer<typeof loginSchema>
 type LoginMode = 'staff' | 'student'
 
-const modeContent: Record<LoginMode, { heading: string; description: string; emailPlaceholder: string; toggle: string }> = {
+const modeContent: Record<LoginMode, { heading: string; description: string; userIdPlaceholder: string; toggle: string }> = {
   staff: {
     heading: 'Staff Login',
     description: 'HOD, faculty, lab assistants and system administrators can sign in here.',
-    emailPlaceholder: 'Enter your institutional staff email',
+    userIdPlaceholder: 'Enter your User ID or Admin Email',
     toggle: 'Student? Use student login',
   },
   student: {
     heading: 'Student Login',
     description: 'Students can sign in to access academic records and department services.',
-    emailPlaceholder: 'Enter your student email address',
+    userIdPlaceholder: 'Enter your User ID or Admin Email',
     toggle: 'Staff member? Use staff login',
   },
 }
@@ -41,7 +41,6 @@ export function LoginPage() {
   const [mode, setMode] = useState<LoginMode>('staff')
   const [showPassword, setShowPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(false)
-  const [recoveryMessage, setRecoveryMessage] = useState('')
   const { register, handleSubmit, setError, clearErrors, formState: { errors, isSubmitting } } = useForm<LoginValues>()
   const selectedMode = modeContent[mode]
 
@@ -49,7 +48,6 @@ export function LoginPage() {
 
   const switchMode = () => {
     setMode((current) => current === 'staff' ? 'student' : 'staff')
-    setRecoveryMessage('')
     clearErrors('root')
   }
 
@@ -60,7 +58,7 @@ export function LoginPage() {
       return
     }
     try {
-      const user = await login(values.email, values.password, mode)
+      const user = await login(values.userId, values.password, mode)
       const defaultRoute = getDefaultRouteForRole(user.role)
       const requestedPath = typeof location.state === 'object' && location.state && 'from' in location.state && typeof location.state.from === 'string' ? location.state.from : null
       navigate(requestedPath?.startsWith(defaultRoute) ? requestedPath : defaultRoute, { replace: true })
@@ -83,19 +81,18 @@ export function LoginPage() {
 
         <form className="mt-8 space-y-7" onSubmit={handleSubmit(submit)} noValidate>
           <div>
-            <label className="block text-base font-semibold text-[#102b55]" htmlFor="login-email">Email Address</label>
-            <div className="relative mt-2"><Mail className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-[#8aa0bd]" aria-hidden="true" /><Input id="login-email" type="email" autoComplete="email" placeholder={selectedMode.emailPlaceholder} className="min-h-14 border-[#d9e3f3] bg-[#eaf1ff] pl-12 text-base placeholder:text-[#6e83a5] focus:bg-white" {...register('email', { onChange: () => clearErrors('root') })} /></div>
-            {errors.email && <p className="mt-2 text-sm text-error">{errors.email.message}</p>}
+            <label className="block text-base font-semibold text-[#102b55]" htmlFor="login-user-id">User ID or Admin Email</label>
+            <div className="relative mt-2"><UserRound className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-[#8aa0bd]" aria-hidden="true" /><Input id="login-user-id" autoComplete="username" placeholder={selectedMode.userIdPlaceholder} className="min-h-14 border-[#d9e3f3] bg-[#eaf1ff] pl-12 text-base placeholder:text-[#6e83a5] focus:bg-white" {...register('userId', { onChange: () => clearErrors('root') })} /></div>
+            {errors.userId && <p className="mt-2 text-sm text-error">{errors.userId.message}</p>}
           </div>
 
           <div>
-            <div className="flex items-center justify-between gap-3"><label className="block text-base font-semibold text-[#102b55]" htmlFor="login-password">Password</label><button type="button" className="text-sm font-semibold text-[#1248ef] hover:underline" onClick={() => setRecoveryMessage('Password recovery is currently handled through the department IT support team.')}>Forgot password?</button></div>
+            <div className="flex items-center justify-between gap-3"><label className="block text-base font-semibold text-[#102b55]" htmlFor="login-password">Password</label></div>
             <div className="relative mt-2"><LockKeyhole className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-[#8aa0bd]" aria-hidden="true" /><Input id="login-password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" className="min-h-14 border-[#d9e3f3] bg-[#eaf1ff] px-12 text-base focus:bg-white" {...register('password', { onChange: () => clearErrors('root') })} /><button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} className="absolute right-3 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded text-[#6e83a5] hover:bg-white hover:text-[#102b55]" onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? <EyeOff className="size-5" aria-hidden="true" /> : <Eye className="size-5" aria-hidden="true" />}</button></div>
             {errors.password && <p className="mt-2 text-sm text-error">{errors.password.message}</p>}
           </div>
 
           <div className="flex items-center justify-between gap-3"><label className="flex cursor-pointer items-center gap-2 text-base text-[#425d85]"><input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} className="size-5 rounded border-[#8090a8] text-[#2450e8] focus:ring-[#2450e8]" />Remember me</label></div>
-          {recoveryMessage && <p role="status" className="rounded-md bg-blue-50 px-3 py-2 text-sm leading-5 text-information">{recoveryMessage}</p>}
           {restorationError && <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-error">{restorationError} <button type="button" className="font-semibold underline" onClick={() => void retrySessionRestore()}>Retry</button></p>}
           {errors.root && <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-error">{errors.root.message}</p>}
           <Button className="min-h-14 w-full rounded-md bg-[#2450e8] text-base hover:bg-[#153ad0]" type="submit" disabled={isSubmitting || isRestoring}>{isRestoring ? 'Restoring session…' : isSubmitting ? 'Signing in…' : 'Sign In'}</Button>

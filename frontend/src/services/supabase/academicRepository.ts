@@ -10,10 +10,13 @@ type Update<Name extends keyof Database['public']['Tables']> = Table<Name>['Upda
 export type AcademicData = {
   departments: Row<'departments'>[]; academicYears: Row<'academic_years'>[]; semesters: Row<'semesters'>[]; sections: Row<'sections'>[]; subjects: Row<'subjects'>[]; profiles: Row<'profiles'>[]; enrollments: Row<'enrollments'>[]; assignments: Row<'faculty_assignments'>[]; projects: Row<'projects'>[]; timetable: Row<'timetable_entries'>[]
 }
-export type ProfileManagementData = Pick<AcademicData, 'profiles' | 'departments'>
+export type TimetableData = AcademicData & { periods: Row<'timetable_periods'>[]; workingDays: Row<'timetable_working_days'>[]; attendanceSessions: Row<'attendance_sessions'>[] }
+export type ManagedProfile = Pick<Row<'profiles'>, 'id' | 'full_name' | 'employee_or_register_number' | 'department_id' | 'section_id' | 'role' | 'phone' | 'designation' | 'faculty_responsibilities' | 'status'>
+export type ProfileManagementData = { profiles: ManagedProfile[]; departments: Row<'departments'>[]; academicYears: Row<'academic_years'>[]; sections: Row<'sections'>[] }
 export type JuryEligibilityData = Pick<AcademicData, 'profiles' | 'assignments'>
 export type AcademicMasterData = Pick<AcademicData, 'departments' | 'academicYears' | 'semesters' | 'sections' | 'subjects'>
 export type EnrollmentData = Pick<AcademicData, 'profiles' | 'enrollments' | 'departments' | 'academicYears' | 'sections'>
+export type SubjectAllocationData = Pick<AcademicData, 'departments' | 'academicYears' | 'semesters' | 'sections' | 'subjects' | 'profiles' | 'assignments'> & { facultyTeachingScopes: Row<'faculty_teaching_scopes'>[] }
 
 const client = () => { if (!supabase) throw new Error('Supabase is not configured.'); return supabase }
 const fail = (error: { message: string; code?: string } | null, fallback: string) => {
@@ -88,8 +91,14 @@ export const academicRepository = {
   },
   listProfiles: () => list('profiles'), listStudents: async () => (await list('profiles')).filter((profile) => profile.role === 'student'), listFaculty: async () => (await list('profiles')).filter((profile) => profile.role === 'faculty'), updateProfile: (id: string, value: Update<'profiles'>) => update('profiles', id, value), setProfileActiveStatus: (id: string, status: Database['public']['Enums']['user_status']) => update('profiles', id, { status }),
   async loadProfileManagementData(): Promise<ProfileManagementData> {
-    const [profiles, departments] = await Promise.all([list('profiles'), list('departments')])
-    return { profiles, departments }
+    const [profiles, departments, academicYears, sections] = await Promise.all([
+      client().from('profiles').select('id,full_name,employee_or_register_number,department_id,section_id,role,phone,designation,faculty_responsibilities,status').order('full_name'),
+      list('departments'),
+      list('academic_years'),
+      list('sections'),
+    ])
+    fail(profiles.error, 'Unable to load profiles.')
+    return { profiles: (profiles.data ?? []) as ManagedProfile[], departments, academicYears, sections }
   },
   async loadJuryEligibilityData(): Promise<JuryEligibilityData> {
     const [profiles, assignments] = await Promise.all([
@@ -136,19 +145,22 @@ export const academicRepository = {
   removeEnrollment: (id: string) => remove('enrollments', id),
   listFacultyAssignments: () => list('faculty_assignments'),
   async createFacultyAssignment(value: Insert<'faculty_assignments'>) {
-    const [profiles, sections, subjects, assignments] = await Promise.all([list('profiles'), list('sections'), list('subjects'), list('faculty_assignments')])
+    const [profiles, sections, subjects, assignments, facultyTeachingScopes] = await Promise.all([list('profiles'), list('sections'), list('subjects'), list('faculty_assignments'), list('faculty_teaching_scopes')])
     const faculty = profiles.find((profile) => profile.id === value.faculty_id)
     const section = sections.find((item) => item.id === value.section_id)
     const subject = value.subject_id ? subjects.find((item) => item.id === value.subject_id) : null
     if (!faculty || faculty.role !== 'faculty' || faculty.status !== 'active') throw new Error('Select an active Faculty member.')
     if (!section || section.academic_year_id !== value.academic_year_id || section.semester_id !== value.semester_id) throw new Error('The assignment academic context is invalid.')
     if (faculty.department_id !== section.department_id) throw new Error('Faculty and section must belong to the same department.')
-    if (subject && (subject.semester_id !== section.semester_id || subject.department_id !== section.department_id)) throw new Error('Subject and section must share the same semester and department.')
+    if (subject && (subject.semester_id !== section.semester_id || subject.department_id !== section.department_id || subject.study_year !== section.year_number)) throw new Error('Subject must match the selected department, semester, and Study Year.')
+    if (value.assignment_type === 'lab_faculty' && subject?.subject_type !== 'laboratory') throw new Error('Lab Faculty can be assigned only to laboratory subjects.')
+    if ((value.assignment_type === 'subject_faculty' || value.assignment_type === 'lab_faculty') && !facultyTeachingScopes.some((scope) => scope.is_active && scope.faculty_id === value.faculty_id && scope.academic_year_id === value.academic_year_id && scope.study_year === section.year_number && scope.section_id === value.section_id && scope.effective_from <= value.effective_from && (!scope.effective_to || (value.effective_to && value.effective_to <= scope.effective_to)))) throw new Error('Faculty must have an active teaching scope for this Academic Year, Study Year, and Section.')
+    if (subject && value.weekly_hours && value.weekly_hours > subject.weekly_hours) throw new Error('Assigned weekly hours cannot exceed the Subject weekly hours.')
     if (assignments.some((item) => item.is_active && item.faculty_id === value.faculty_id && item.subject_id === (value.subject_id ?? null) && item.section_id === value.section_id && item.assignment_type === value.assignment_type)) throw new Error('This active Faculty assignment already exists.')
     return create('faculty_assignments', value)
   },
   async updateFacultyAssignment(id: string, value: Update<'faculty_assignments'>) {
-    const [assignments, profiles, sections, subjects] = await Promise.all([list('faculty_assignments'), list('profiles'), list('sections'), list('subjects')])
+    const [assignments, profiles, sections, subjects, facultyTeachingScopes] = await Promise.all([list('faculty_assignments'), list('profiles'), list('sections'), list('subjects'), list('faculty_teaching_scopes')])
     const current = assignments.find((item) => item.id === id)
     if (!current) throw new Error('Faculty assignment was not found.')
     const candidate = { ...current, ...value }
@@ -157,7 +169,10 @@ export const academicRepository = {
     const subject = candidate.subject_id ? subjects.find((item) => item.id === candidate.subject_id) : null
     if (!faculty || faculty.role !== 'faculty' || faculty.status !== 'active') throw new Error('Select an active Faculty member.')
     if (!section || faculty.department_id !== section.department_id || section.academic_year_id !== candidate.academic_year_id || section.semester_id !== candidate.semester_id) throw new Error('Faculty and section must share a valid department and academic context.')
-    if (subject && (subject.department_id !== section.department_id || subject.semester_id !== section.semester_id)) throw new Error('Subject and section must share the same semester and department.')
+    if (subject && (subject.department_id !== section.department_id || subject.semester_id !== section.semester_id || subject.study_year !== section.year_number)) throw new Error('Subject must match the selected department, semester, and Study Year.')
+    if (candidate.assignment_type === 'lab_faculty' && subject?.subject_type !== 'laboratory') throw new Error('Lab Faculty can be assigned only to laboratory subjects.')
+    if ((candidate.assignment_type === 'subject_faculty' || candidate.assignment_type === 'lab_faculty') && !facultyTeachingScopes.some((scope) => scope.is_active && scope.faculty_id === candidate.faculty_id && scope.academic_year_id === candidate.academic_year_id && scope.study_year === section.year_number && scope.section_id === candidate.section_id && scope.effective_from <= candidate.effective_from && (!scope.effective_to || (candidate.effective_to && candidate.effective_to <= scope.effective_to)))) throw new Error('Faculty must have an active teaching scope for this Academic Year, Study Year, and Section.')
+    if (subject && candidate.weekly_hours > subject.weekly_hours) throw new Error('Assigned weekly hours cannot exceed the Subject weekly hours.')
     if (assignments.some((item) => item.id !== id && item.is_active && item.faculty_id === candidate.faculty_id && item.subject_id === candidate.subject_id && item.section_id === candidate.section_id && item.assignment_type === candidate.assignment_type)) throw new Error('This active Faculty assignment already exists.')
     return update('faculty_assignments', id, value)
   },
@@ -197,14 +212,17 @@ export const academicRepository = {
     fail(error, 'Unable to update Jury eligibility.')
   },
   listTimetableEntries: () => list('timetable_entries'),
-  async validateTimetableConflicts(value: Pick<Row<'timetable_entries'>, 'section_id' | 'faculty_id' | 'day_of_week' | 'starts_at' | 'ends_at'>, excludingId?: string) {
-    if (value.ends_at <= value.starts_at) throw new Error('End time must be after start time.')
-    const entries = await list('timetable_entries')
-    const overlaps = (entry: Row<'timetable_entries'>) => entry.day_of_week === value.day_of_week && entry.starts_at < value.ends_at && entry.ends_at > value.starts_at && entry.id !== excludingId
-    if (entries.some((entry) => entry.section_id === value.section_id && overlaps(entry))) throw new Error('This section already has an overlapping timetable entry.')
-    if (value.faculty_id && entries.some((entry) => entry.faculty_id === value.faculty_id && overlaps(entry))) throw new Error('This Faculty member already has an overlapping timetable entry.')
+  async loadSubjectAllocationData(): Promise<SubjectAllocationData> {
+    const [academic, facultyTeachingScopes] = await Promise.all([this.loadAcademicData(), list('faculty_teaching_scopes')])
+    return { departments: academic.departments, academicYears: academic.academicYears, semesters: academic.semesters, sections: academic.sections, subjects: academic.subjects, profiles: academic.profiles, assignments: academic.assignments, facultyTeachingScopes }
   },
-  async createTimetableEntry(value: Insert<'timetable_entries'>) { await this.validateTimetableConflicts({ ...value, faculty_id: value.faculty_id ?? null }); return create('timetable_entries', value) },
-  async updateTimetableEntry(id: string, value: Update<'timetable_entries'>) { const existing = (await list('timetable_entries')).find((entry) => entry.id === id); if (!existing) throw new Error('Timetable entry was not found.'); const candidate = { ...existing, ...value }; await this.validateTimetableConflicts(candidate, id); return update('timetable_entries', id, value) }, deleteTimetableEntry: (id: string) => remove('timetable_entries', id),
+  async loadTimetableData(): Promise<TimetableData> { const [academic, periods, workingDays, attendanceSessions] = await Promise.all([this.loadAcademicData(), list('timetable_periods'), list('timetable_working_days'), list('attendance_sessions')]); return { ...academic, periods, workingDays, attendanceSessions } },
+  async saveTimetablePeriod(value: { id?: string; departmentId?: string; label: string; periodNumber?: number; startsAt: string; endsAt: string; displayOrder: number; periodType: 'teaching' | 'break' | 'lunch' | 'non_teaching'; isActive: boolean }) {
+    const { error } = await client().rpc('save_timetable_period' as never, { p_id: value.id ?? null, p_department_id: value.departmentId ?? null, p_label: value.label, p_period_number: value.periodNumber ?? null, p_starts_at: value.startsAt, p_ends_at: value.endsAt, p_display_order: value.displayOrder, p_period_type: value.periodType, p_is_active: value.isActive } as never)
+    fail(error, 'Unable to save timetable period.')
+  },
+  async setTimetableWorkingDay(id: string, isEnabled: boolean) { const { error } = await client().rpc('save_timetable_working_day' as never, { p_id: id, p_is_enabled: isEnabled } as never); fail(error, 'Unable to update working day.') },
+  async saveTimetableEntry(value: { entryId?: string; sectionId: string; subjectId: string; facultyId: string; allocationId: string; periodId: string; dayOfWeek: number; room: string; lab?: string; labAssistantId?: string; effectiveFrom: string; effectiveTo?: string; isActive?: boolean }) { const { error } = await client().rpc('save_timetable_entry' as never, { p_entry_id: value.entryId ?? null, p_section_id: value.sectionId, p_subject_id: value.subjectId, p_faculty_id: value.facultyId, p_allocation_id: value.allocationId, p_period_id: value.periodId, p_day_of_week: value.dayOfWeek, p_room: value.room, p_lab: value.lab ?? null, p_lab_assistant_id: value.labAssistantId ?? null, p_effective_from: value.effectiveFrom, p_effective_to: value.effectiveTo ?? null, p_is_active: value.isActive ?? true } as never); fail(error, 'Unable to save timetable entry.') },
+  async deactivateTimetableEntry(id: string) { const { error } = await client().rpc('deactivate_timetable_entry' as never, { p_entry_id: id } as never); fail(error, 'Unable to deactivate timetable entry.') },
   async loadAcademicData(): Promise<AcademicData> { const [departments, academicYears, semesters, sections, subjects, profiles, enrollments, assignments, projects, timetable] = await Promise.all([list('departments'), list('academic_years'), list('semesters'), list('sections'), list('subjects'), list('profiles'), list('enrollments'), list('faculty_assignments'), list('projects'), list('timetable_entries')]); return { departments, academicYears, semesters, sections, subjects, profiles, enrollments, assignments, projects, timetable } },
 }

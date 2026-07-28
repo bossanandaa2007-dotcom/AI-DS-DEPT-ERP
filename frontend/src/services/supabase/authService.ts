@@ -20,6 +20,16 @@ const isStaffRole = (role: AppUser['role']) => role === 'super_admin' || role ==
 
 const NETWORK_ERROR_MESSAGE = 'Unable to connect to Supabase. Check your internet connection and try again.'
 
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+function loginIdentifierToAuthEmail(userId: string) {
+  const identifier = userId.trim()
+  const domain = import.meta.env.VITE_AUTH_EMAIL_DOMAIN?.trim().toLowerCase()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(identifier)) throw new AuthServiceError('invalid_credentials', 'Enter a valid User ID / Register Number.')
+  if (!domain || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(domain)) throw new AuthServiceError('session_loading', 'Sign-in is not configured. Contact the administrator.')
+  return `${identifier.toLowerCase()}@${domain}`
+}
+
 function isNetworkFailure(error: { message?: string; name?: string; status?: number } | null | undefined) {
   return error?.name === 'AuthRetryableFetchError' || error?.status === 0 || /fetch|network|networkerror|failed to fetch|load failed|timeout/i.test(error?.message ?? '')
 }
@@ -58,9 +68,14 @@ export const supabaseAuthService = {
     if (!userData.user) return null
     return loadProfile(userData.user.id)
   },
-  async login(email: string, password: string, portal: LoginPortal): Promise<AppUser> {
+  async login(userId: string, password: string, portal: LoginPortal): Promise<AppUser> {
     const auth = client()
-    const { data, error } = await auth.auth.signInWithPassword({ email, password })
+    const identifier = userId.trim()
+    if (identifier.includes('@') && !emailPattern.test(identifier)) throw new AuthServiceError('invalid_credentials', 'Enter a valid email address.')
+    const loginEmail = identifier.includes('@')
+      ? identifier.trim().toLowerCase()
+      : loginIdentifierToAuthEmail(identifier)
+    const { data, error } = await auth.auth.signInWithPassword({ email: loginEmail, password })
     if (error) {
       if (isNetworkFailure(error)) throw new AuthServiceError('network', NETWORK_ERROR_MESSAGE)
       if (/invalid login credentials|invalid.*password|email not confirmed/i.test(error.message)) throw new AuthServiceError('invalid_credentials', 'Invalid email or password.')

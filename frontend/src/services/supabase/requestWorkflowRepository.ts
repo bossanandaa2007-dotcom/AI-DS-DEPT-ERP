@@ -296,7 +296,7 @@ export const requestWorkflowRepository = {
 
   async saveCompetition(input: CompetitionInput): Promise<CompetitionRow> {
     const { profile } = await currentContext()
-    if (profile.role !== 'hod' && profile.role !== 'super_admin') throw new Error('Only HOD or Super Admin can maintain competition records.')
+    if (profile.role !== 'super_admin') throw new Error('Only Super Admin can maintain competition records.')
     if (!input.name.trim() || !input.organizer.trim() || !input.eventDate) throw new Error('Enter the competition name, organizer, and event date.')
     const details = objectDetails(input.details)
     const endDate = typeof details.end_date === 'string' ? details.end_date : input.eventDate

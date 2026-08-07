@@ -1,4 +1,4 @@
-import { CheckCheck, Clock3, LockKeyhole, RefreshCw, UserCheck } from 'lucide-react'
+import { ArrowLeft, CalendarDays, CheckCheck, LockKeyhole, RefreshCw, UserCheck, UserX } from 'lucide-react'
 import { useCallback, useState } from 'react'
 
 import { DataTable } from '@/components/common/DataTable'
@@ -14,7 +14,7 @@ import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Textarea } from '@/components/ui/Textarea'
-import { getCheckInWindowState } from '@/lib/date-time'
+import { shiftToWeekday, toIsoDate, weekdayOf } from '@/lib/date-time'
 import { useAsyncResource } from '@/hooks/useAsyncResource'
 import { useAuth } from '@/modules/auth/useAuth'
 import {
@@ -23,12 +23,14 @@ import {
   type AttendanceData,
   type AttendanceRecordRow,
   type AttendanceSessionRow,
+  type AttendanceSheetEntry,
   type AttendanceStatus,
+  type StaffAttendanceRow,
 } from '@/services/supabase/attendanceRepository'
 
 const statuses: AttendanceStatus[] = ['present', 'late', 'absent']
 const days = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => toIsoDate()
 const tone = (status: string): 'success' | 'warning' | 'primary' | 'muted' => status === 'present' || status === 'finalized' ? 'success' : status === 'late' || status === 'open' || status === 'pending' ? 'warning' : status === 'absent' || status === 'rejected' ? 'muted' : 'primary'
 const readable = (value: string) => value.replaceAll('_', ' ')
 
@@ -36,15 +38,30 @@ export function AttendancePage() {
   const { currentUser } = useAuth()
   const load = useCallback(() => attendanceRepository.loadAttendanceData(), [])
   const resource = useAsyncResource(load)
-  if (resource.isLoading) return <LoadingState label="Loading attendance…" />
+  // Only the first load blanks the page.  Background refreshes keep the tree mounted so an
+  // in-progress attendance sheet is never thrown away.
+  if (resource.isLoading && !resource.data) return <LoadingState label="Loading attendance…" />
   if (resource.error) return <div className="space-y-4"><ErrorState title="Unable to load attendance" description={resource.error} /><Button variant="secondary" onClick={() => void resource.reload()}><RefreshCw className="size-4" /> Retry</Button></div>
   if (!currentUser || !resource.data) return null
   const common = { data: resource.data, reload: resource.reload, userId: currentUser.id }
   if (currentUser.role === 'student') return <StudentAttendance {...common} />
   if (currentUser.role === 'faculty') return <FacultyAttendance {...common} />
-  if (currentUser.role === 'hod' || currentUser.role === 'super_admin') return <DepartmentAttendance {...common} />
+  if (currentUser.role === 'hod' || currentUser.role === 'super_admin') return <DepartmentAttendance {...common} canManage={currentUser.role === 'super_admin'} />
   return <StaffAttendanceView {...common} />
 }
+
+interface StudentEntry { id: string; record: AttendanceRecordRow; session: AttendanceSessionRow }
+interface AttendanceSummary { total: number; present: number; late: number; absent: number; percentage: number | null }
+
+const DAILY_KEY = 'daily'
+const summarizeRecords = (records: AttendanceRecordRow[]): AttendanceSummary => {
+  const count = (status: AttendanceStatus) => records.filter((record) => record.status === status).length
+  const present = count('present'), late = count('late'), absent = count('absent')
+  // Late arrivals still attended the class, so they count towards the percentage.
+  return { total: records.length, present, late, absent, percentage: records.length ? Math.round(((present + late) / records.length) * 100) : null }
+}
+const summarize = (entries: StudentEntry[]) => summarizeRecords(entries.map((entry) => entry.record))
+const monthLabel = (value: string) => { const [year, month] = value.split('-').map(Number); return new Date(year, month - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) }
 
 function StudentAttendance({ data, reload, userId }: ViewProps) {
   const [message, setMessage] = useState('')
@@ -52,70 +69,290 @@ function StudentAttendance({ data, reload, userId }: ViewProps) {
   const [correctionRecord, setCorrectionRecord] = useState<AttendanceRecordRow | null>(null)
   const [requestedStatus, setRequestedStatus] = useState<AttendanceStatus>('present')
   const [reason, setReason] = useState('')
-  const date = today()
-  const enrollment = data.enrollments.find((row) => row.student_id === userId && row.status === 'active')
-  const profile = data.profiles.find((row) => row.id === userId)
-  const sectionId = enrollment?.section_id ?? profile?.section_id
-  const dailySession = data.sessions.find((row) => row.session_type === 'daily' && row.section_id === sectionId && row.attendance_date === date)
-  const dailyRecord = data.records.find((row) => row.session_id === dailySession?.id && row.student_id === userId)
-  const personalRecords = data.records.filter((row) => row.student_id === userId)
-  const pendingCorrectionIds = new Set(data.corrections.filter((row) => row.status === 'pending').map((row) => row.attendance_record_id))
-  const windowState = getCheckInWindowState(new Date())
+  const [scope, setScope] = useState<'overall' | 'monthly'>('overall')
+  const [month, setMonth] = useState(() => today().slice(0, 7))
+  const [subjectFilter, setSubjectFilter] = useState('all')
 
-  const checkIn = async () => {
-    if (!dailySession) { setMessage('Your Class Teacher has not opened today’s daily check-in session.'); return }
-    setSaving(true); setMessage('')
-    try { await attendanceRepository.studentDailyCheckIn(dailySession.id); await reload(); setMessage('Daily check-in submitted for Faculty verification.') } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to check in.') } finally { setSaving(false) }
-  }
+  const pendingCorrectionIds = new Set(data.corrections.filter((row) => row.status === 'pending').map((row) => row.attendance_record_id))
+  const subjectName = (id: string | null) => data.subjects.find((row) => row.id === id)?.name ?? 'Daily attendance'
+  const subjectCode = (id: string | null) => data.subjects.find((row) => row.id === id)?.code ?? null
+  const keyOf = (session: AttendanceSessionRow) => session.subject_id ?? DAILY_KEY
+
+  const entries: StudentEntry[] = data.records
+    .filter((record) => record.student_id === userId)
+    .map((record) => ({ id: record.id, record, session: data.sessions.find((row) => row.id === record.session_id) }))
+    .filter((entry): entry is StudentEntry => Boolean(entry.session))
+    .sort((a, b) => b.session.attendance_date.localeCompare(a.session.attendance_date))
+  const scoped = scope === 'overall' ? entries : entries.filter((entry) => entry.session.attendance_date.startsWith(month))
+  const filtered = subjectFilter === 'all' ? scoped : scoped.filter((entry) => keyOf(entry.session) === subjectFilter)
+  const summary = summarize(filtered)
+  const scopeLabel = scope === 'overall' ? 'All time' : monthLabel(month)
+
+  const subjectKeys = [...new Set(entries.map((entry) => keyOf(entry.session)))]
+  const subjectRows = subjectKeys.map((key) => ({ id: key, label: key === DAILY_KEY ? 'Daily attendance' : subjectName(key), code: key === DAILY_KEY ? null : subjectCode(key), ...summarize(scoped.filter((entry) => keyOf(entry.session) === key)) }))
+  const monthKeys = [...new Set(entries.map((entry) => entry.session.attendance_date.slice(0, 7)))].sort((a, b) => b.localeCompare(a))
+  const monthRows = monthKeys.map((key) => ({ id: key, ...summarize(entries.filter((entry) => entry.session.attendance_date.startsWith(key) && (subjectFilter === 'all' || keyOf(entry.session) === subjectFilter))) }))
+
   const requestCorrection = async () => {
     if (!correctionRecord) return
     setSaving(true); setMessage('')
     try { await attendanceRepository.requestCorrection(correctionRecord, requestedStatus, reason); await reload(); setCorrectionRecord(null); setReason(''); setMessage('Attendance correction submitted.') } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to request correction.') } finally { setSaving(false) }
   }
-  return <div className="space-y-6"><PageHeader title="My attendance" description="Daily check-in, subject attendance, and correction tracking from live records." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />{message && <Feedback message={message} />}<Card><div className="flex items-start justify-between gap-3"><div><h2 className="font-bold text-text">Today’s daily check-in</h2><p className="mt-1 text-sm text-muted">{date} · Check-in window: {readable(windowState)}</p></div><Clock3 className="size-5 text-secondary" /></div>{dailyRecord ? <div className="mt-4"><Badge tone={tone(dailySession?.status ?? dailyRecord.status)}>{dailySession?.status === 'finalized' ? 'finalized' : dailyRecord.status}</Badge><p className="mt-2 text-sm text-muted">{dailyRecord.check_in_time ? `Checked in at ${new Date(dailyRecord.check_in_time).toLocaleTimeString()}.` : 'Attendance entered by Faculty.'}</p></div> : <Button className="mt-4" disabled={saving || windowState !== 'open' || !dailySession} onClick={() => void checkIn()}><UserCheck className="size-4" /> {saving ? 'Checking in…' : 'Check in'}</Button>}{!dailySession && <p className="mt-3 text-sm text-warning">Daily check-in becomes available after the Class Teacher opens today’s session.</p>}</Card><Card><h2 className="font-bold text-text">Personal attendance history</h2><div className="mt-4"><DataTable rows={personalRecords} empty={<EmptyState title="No attendance records yet" />} columns={[{ header: 'Date / subject', render: (record) => { const session = data.sessions.find((row) => row.id === record.session_id); return <div><p className="font-semibold">{session?.attendance_date ?? '—'} · {session?.session_type ?? 'attendance'}</p><p className="text-xs text-muted">{data.subjects.find((row) => row.id === session?.subject_id)?.name ?? 'Daily attendance'}</p></div> } }, { header: 'Status', render: (record) => <Badge tone={tone(record.status)}>{record.status}</Badge> }, { header: 'Session', render: (record) => { const session = data.sessions.find((row) => row.id === record.session_id); return <Badge tone={tone(session?.status ?? 'draft')}>{session?.status ?? 'draft'}</Badge> } }, { header: 'Correction', render: (record) => pendingCorrectionIds.has(record.id) ? <Badge tone="warning">Pending</Badge> : <Button className="min-h-8 px-3" variant="secondary" onClick={() => { setCorrectionRecord(record); setRequestedStatus(record.status === 'present' ? 'late' : 'present') }}>Request</Button> }]} /></div></Card><CorrectionRequestDialog record={correctionRecord} requestedStatus={requestedStatus} setRequestedStatus={setRequestedStatus} reason={reason} setReason={setReason} saving={saving} onClose={() => setCorrectionRecord(null)} onSubmit={requestCorrection} /></div>
+
+  return <div className="space-y-6">
+    <PageHeader title="My attendance" description="Your recorded attendance, by subject and by month. Entries are marked by your Faculty." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />
+    {message && <Feedback message={message} />}
+    {entries.length === 0
+      ? <Card><EmptyState title="No attendance records yet" description="Your attendance appears here once your Faculty submits a session." /></Card>
+      : <>
+        <Card>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="text-sm font-semibold text-text">View
+              <Select className="mt-1" value={scope} onChange={(event) => setScope(event.target.value as 'overall' | 'monthly')}><option value="overall">Overall</option><option value="monthly">Month by month</option></Select>
+            </label>
+            <label className="text-sm font-semibold text-text">Month
+              <Select className="mt-1" disabled={scope === 'overall'} value={month} onChange={(event) => setMonth(event.target.value)}>{monthKeys.map((key) => <option key={key} value={key}>{monthLabel(key)}</option>)}</Select>
+            </label>
+            <label className="text-sm font-semibold text-text">Subject
+              <Select className="mt-1" value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}><option value="all">All subjects</option>{subjectKeys.map((key) => <option key={key} value={key}>{key === DAILY_KEY ? 'Daily attendance' : `${subjectCode(key) ?? ''} · ${subjectName(key)}`.trim()}</option>)}</Select>
+            </label>
+          </div>
+        </Card>
+        <section>
+          <h2 className="mb-3 font-bold text-text">{scopeLabel}{subjectFilter === 'all' ? '' : ` · ${subjectFilter === DAILY_KEY ? 'Daily attendance' : subjectName(subjectFilter)}`}</h2>
+          <div className="grid gap-3 grid-cols-2 lg:grid-cols-5">
+            <StatTile label="Total classes" value={summary.total} />
+            <StatTile label="Present" value={summary.present} accent="text-success" />
+            <StatTile label="Late" value={summary.late} accent="text-warning" />
+            <StatTile label="Absent" value={summary.absent} accent="text-error" />
+            <StatTile label="Attendance" value={summary.percentage === null ? '—' : `${summary.percentage}%`} accent={summary.percentage !== null && summary.percentage < 75 ? 'text-error' : 'text-success'} />
+          </div>
+          <PercentageBar percentage={summary.percentage} />
+        </section>
+        <Card>
+          <h2 className="font-bold text-text">Subject-wise attendance</h2>
+          <p className="mt-1 text-sm text-muted">{scopeLabel}. Select a row to filter the history below.</p>
+          <div className="mt-4"><DataTable rows={subjectRows} empty={<EmptyState title="No records in this period" />} columns={[
+            { header: 'Subject', render: (row) => <div><p className="font-semibold">{row.label}</p>{row.code && <p className="text-xs text-muted">{row.code}</p>}</div> },
+            { header: 'Total', render: (row) => row.total },
+            { header: 'Present', render: (row) => row.present + row.late },
+            { header: 'Absent', render: (row) => row.absent },
+            { header: 'Attendance', render: (row) => row.percentage === null ? '—' : <Badge tone={row.percentage < 75 ? 'warning' : 'success'}>{row.percentage}%</Badge> },
+            { header: 'View', render: (row) => <Button className="min-h-8 px-3" variant={subjectFilter === row.id ? 'primary' : 'secondary'} onClick={() => setSubjectFilter(subjectFilter === row.id ? 'all' : row.id)}>{subjectFilter === row.id ? 'Showing' : 'Show'}</Button> },
+          ]} /></div>
+        </Card>
+        <Card>
+          <h2 className="font-bold text-text">Month-by-month attendance</h2>
+          <p className="mt-1 text-sm text-muted">{subjectFilter === 'all' ? 'All subjects' : subjectFilter === DAILY_KEY ? 'Daily attendance' : subjectName(subjectFilter)}.</p>
+          <div className="mt-4"><DataTable rows={monthRows} empty={<EmptyState title="No records yet" />} columns={[
+            { header: 'Month', render: (row) => <span className="font-semibold">{monthLabel(row.id)}</span> },
+            { header: 'Total', render: (row) => row.total },
+            { header: 'Present', render: (row) => row.present + row.late },
+            { header: 'Absent', render: (row) => row.absent },
+            { header: 'Attendance', render: (row) => row.percentage === null ? '—' : <Badge tone={row.percentage < 75 ? 'warning' : 'success'}>{row.percentage}%</Badge> },
+            { header: 'View', render: (row) => <Button className="min-h-8 px-3" variant={scope === 'monthly' && month === row.id ? 'primary' : 'secondary'} onClick={() => { setScope('monthly'); setMonth(row.id) }}>{scope === 'monthly' && month === row.id ? 'Showing' : 'Show'}</Button> },
+          ]} /></div>
+        </Card>
+        <Card>
+          <h2 className="font-bold text-text">Attendance history</h2>
+          <p className="mt-1 text-sm text-muted">{filtered.length} record{filtered.length === 1 ? '' : 's'} · {scopeLabel}</p>
+          <div className="mt-4"><DataTable rows={filtered} empty={<EmptyState title="No records match these filters" />} columns={[
+            { header: 'Date', render: (entry) => <div><p className="font-semibold">{entry.session.attendance_date}</p><p className="text-xs text-muted">{entry.session.period ? `Period ${entry.session.period}` : readable(entry.session.session_type)}</p></div> },
+            { header: 'Subject', render: (entry) => <div><p>{subjectName(entry.session.subject_id)}</p>{subjectCode(entry.session.subject_id) && <p className="text-xs text-muted">{subjectCode(entry.session.subject_id)}</p>}</div> },
+            { header: 'Status', render: (entry) => <Badge tone={tone(entry.record.status)}>{entry.record.status}</Badge> },
+            { header: 'Session', render: (entry) => <Badge tone={tone(entry.session.status)}>{entry.session.status}</Badge> },
+            { header: 'Correction', render: (entry) => pendingCorrectionIds.has(entry.record.id) ? <Badge tone="warning">Pending</Badge> : <Button className="min-h-8 px-3" variant="secondary" onClick={() => { setCorrectionRecord(entry.record); setRequestedStatus(entry.record.status === 'present' ? 'late' : 'present') }}>Request</Button> },
+          ]} /></div>
+        </Card>
+      </>}
+    <CorrectionRequestDialog record={correctionRecord} requestedStatus={requestedStatus} setRequestedStatus={setRequestedStatus} reason={reason} setReason={setReason} saving={saving} onClose={() => setCorrectionRecord(null)} onSubmit={requestCorrection} />
+  </div>
+}
+
+function StatTile({ label, value, accent = 'text-text' }: { label: string; value: number | string; accent?: string }) {
+  return <Card className="p-4"><p className="text-xs font-semibold uppercase tracking-wide text-muted">{label}</p><p className={`mt-1 text-3xl font-bold ${accent}`}>{value}</p></Card>
+}
+
+function PercentageBar({ percentage }: { percentage: number | null }) {
+  if (percentage === null) return null
+  return <div className="mt-3">
+    <div className="h-2 w-full overflow-hidden rounded-full bg-border"><div className={`h-full rounded-full ${percentage < 75 ? 'bg-error' : 'bg-success'}`} style={{ width: `${percentage}%` }} /></div>
+    <p className="mt-2 text-xs text-muted">{percentage < 75 ? 'Below the 75% requirement.' : 'Meets the 75% requirement.'} Present and late classes both count as attended.</p>
+  </div>
 }
 
 function FacultyAttendance({ data, reload, userId }: ViewProps) {
   const [date, setDate] = useState(today())
-  const [periodId, setPeriodId] = useState('')
-  const [dailySectionId, setDailySectionId] = useState('')
-  const [search, setSearch] = useState('')
+  const [showAllDays, setShowAllDays] = useState(false)
+  const [openedSession, setOpenedSession] = useState<AttendanceSessionRow | null>(null)
+  const [starting, setStarting] = useState('')
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
   const [finalizeSession, setFinalizeSession] = useState<AttendanceSessionRow | null>(null)
+
   const assignments = data.assignments.filter((row) => row.faculty_id === userId && row.is_active)
   const assignedSectionIds = new Set(assignments.map((row) => row.section_id))
   const periods = data.timetable.filter((entry) => assignedSectionIds.has(entry.section_id) && assignments.some((assignment) => assignment.section_id === entry.section_id && (assignment.subject_id === entry.subject_id || assignment.assignment_type === 'class_teacher')))
   const classTeacherSections = data.sections.filter((section) => assignments.some((assignment) => assignment.section_id === section.id && assignment.assignment_type === 'class_teacher'))
-  const selectedPeriod = periods.find((row) => row.id === periodId)
-  const selectedSession = data.sessions.find((row) => row.timetable_entry_id === periodId && row.attendance_date === date)
-  const dailySession = data.sessions.find((row) => row.session_type === 'daily' && row.section_id === dailySectionId && row.attendance_date === date)
   const activeStudents = (sectionId: string) => data.enrollments.filter((row) => row.section_id === sectionId && row.status === 'active').map((row) => data.profiles.find((profile) => profile.id === row.student_id)).filter((row): row is NonNullable<typeof row> => Boolean(row && row.status === 'active'))
-  const subjectStudents = selectedPeriod ? activeStudents(selectedPeriod.section_id) : []
-  const dailyStudents = dailySectionId ? activeStudents(dailySectionId) : []
+  const sectionName = (sectionId: string) => data.sections.find((row) => row.id === sectionId)?.name ?? '—'
+  const subjectName = (subjectId: string | null) => data.subjects.find((row) => row.id === subjectId)?.name ?? 'Subject attendance'
+  const sessionFor = (entryId: string) => data.sessions.find((row) => row.timetable_entry_id === entryId && row.attendance_date === date)
+  const dailySessionFor = (sectionId: string) => data.sessions.find((row) => row.session_type === 'daily' && row.section_id === sectionId && row.attendance_date === date)
+  // Reloads replace the row object, so always prefer the freshest copy of the opened session.
+  const activeSession = openedSession ? data.sessions.find((row) => row.id === openedSession.id) ?? openedSession : null
 
-  const openSubject = async () => { if (!selectedPeriod) return; setSaving(true); setMessage(''); try { await attendanceRepository.openSubjectSession(selectedPeriod.id, date); await reload(); setMessage('Subject attendance session opened.') } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to open attendance.') } finally { setSaving(false) } }
-  const openDaily = async () => { if (!dailySectionId) return; setSaving(true); setMessage(''); try { await attendanceRepository.openDailySession(dailySectionId, date); await reload(); setMessage('Daily attendance session opened.') } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to open daily attendance.') } finally { setSaving(false) } }
-  const saveStatus = async (session: AttendanceSessionRow, studentId: string, status: AttendanceStatus) => { setSaving(true); setMessage(''); try { await attendanceRepository.saveAttendanceRecord(session, studentId, status); await reload() } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to save attendance.') } finally { setSaving(false) } }
-  const allPresent = async () => { if (!selectedSession) return; setSaving(true); setMessage(''); try { await attendanceRepository.saveAllAttendance(selectedSession, subjectStudents, 'present'); await reload(); setMessage('All enrolled students marked present.') } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to save attendance.') } finally { setSaving(false) } }
-  const verifyDaily = async (record: AttendanceRecordRow, status: AttendanceStatus) => { setSaving(true); setMessage(''); try { await attendanceRepository.verifyDailyRecord(record.id, status); await reload() } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to verify check-in.') } finally { setSaving(false) } }
-  const finalize = async () => { if (!finalizeSession) return; const students = activeStudents(finalizeSession.section_id); const count = data.records.filter((record) => record.session_id === finalizeSession.id).length; if (count < students.length) { setMessage('Set attendance for every active enrolled student before finalizing.'); setFinalizeSession(null); return } setSaving(true); try { await attendanceRepository.finalizeSession(finalizeSession.id); await reload(); setFinalizeSession(null); setMessage('Attendance finalized and locked.') } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to finalize attendance.') } finally { setSaving(false) } }
+  const enterSheet = async (key: string, open: () => Promise<AttendanceSessionRow>) => {
+    setStarting(key); setMessage('')
+    try { setOpenedSession(await open()); void reload() } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to open attendance.') } finally { setStarting('') }
+  }
+  const submitSheet = async (entries: AttendanceSheetEntry[]) => {
+    if (!activeSession) return
+    setSaving(true); setMessage('')
+    try { await attendanceRepository.submitAttendanceSheet(activeSession, entries); await reload(); setMessage(`Attendance submitted for ${entries.length} student${entries.length === 1 ? '' : 's'}.`) } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to submit attendance.') } finally { setSaving(false) }
+  }
+  const finalize = async () => {
+    if (!finalizeSession) return
+    const students = activeStudents(finalizeSession.section_id)
+    const count = data.records.filter((record) => record.session_id === finalizeSession.id).length
+    if (count < students.length) { setMessage('Submit attendance for every active enrolled student before finalizing.'); setFinalizeSession(null); return }
+    setSaving(true)
+    try { await attendanceRepository.finalizeSession(finalizeSession.id); await reload(); setFinalizeSession(null); setMessage('Attendance finalized and locked.') } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to finalize attendance.') } finally { setSaving(false) }
+  }
+  const finalizeDialog = <ConfirmDialog isOpen={Boolean(finalizeSession)} title="Finalize attendance?" description="Finalization permanently locks direct edits. Later changes require an approved correction." confirmLabel="Finalize and lock" onCancel={() => setFinalizeSession(null)} onConfirm={() => void finalize()} />
 
-  return <div className="space-y-6"><PageHeader title="Faculty attendance" description="Daily verification and subject attendance are restricted to active Faculty assignments." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />{message && <Feedback message={message} />}<Card><label className="block max-w-xs text-sm font-semibold">Attendance date<Input className="mt-1" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label></Card><DailyVerificationCard data={data} session={dailySession} sections={classTeacherSections} sectionId={dailySectionId} setSectionId={setDailySectionId} students={dailyStudents} saving={saving} onOpen={openDaily} onVerify={verifyDaily} onSaveStatus={saveStatus} onFinalize={setFinalizeSession} /><Card><h2 className="font-bold text-text">Assigned timetable periods</h2><div className="mt-4"><DataTable rows={periods} empty={<EmptyState title="No assigned subject periods" />} columns={[{ header: 'Period', render: (entry) => `${days[entry.day_of_week]} · P${entry.period} · ${entry.starts_at}–${entry.ends_at}` }, { header: 'Subject', render: (entry) => data.subjects.find((row) => row.id === entry.subject_id)?.name ?? '—' }, { header: 'Section', render: (entry) => data.sections.find((row) => row.id === entry.section_id)?.name ?? '—' }, { header: 'Action', render: (entry) => <Button variant={periodId === entry.id ? 'primary' : 'secondary'} onClick={() => setPeriodId(entry.id)}>{data.sessions.find((session) => session.timetable_entry_id === entry.id && session.attendance_date === date)?.status === 'finalized' ? 'View finalized' : 'Open'}</Button> }]} /></div></Card>{selectedPeriod && <SubjectAttendanceCard data={data} period={selectedPeriod} session={selectedSession} students={subjectStudents} search={search} setSearch={setSearch} saving={saving} onOpen={openSubject} onSave={saveStatus} onAllPresent={allPresent} onFinalize={setFinalizeSession} />}<CorrectionReviewCard data={data} reload={reload} /><StaffSelfCard data={data} reload={reload} userId={userId} /><ConfirmDialog isOpen={Boolean(finalizeSession)} title="Finalize attendance?" description="Finalization permanently locks direct edits. Later changes require an approved correction." confirmLabel="Finalize and lock" onCancel={() => setFinalizeSession(null)} onConfirm={() => void finalize()} /></div>
+  if (activeSession) {
+    const entry = activeSession.timetable_entry_id ? periods.find((row) => row.id === activeSession.timetable_entry_id) : undefined
+    const heading = activeSession.session_type === 'daily' ? 'Daily check-in attendance' : subjectName(activeSession.subject_id)
+    const context = [sectionName(activeSession.section_id), activeSession.period ? `Period ${activeSession.period}` : null, entry ? `${entry.starts_at}–${entry.ends_at}` : null, entry?.room, date].filter(Boolean).join(' · ')
+    return <div className="space-y-6">
+      <PageHeader title={heading} description={context} actions={<Button variant="secondary" onClick={() => { setOpenedSession(null); setMessage('') }}><ArrowLeft className="size-4" /> Back to periods</Button>} />
+      {message && <Feedback message={message} />}
+      <AttendanceSheet key={activeSession.id} session={activeSession} students={activeStudents(activeSession.section_id)} records={data.records.filter((row) => row.session_id === activeSession.id)} saving={saving} onSubmit={submitSheet} onFinalize={() => setFinalizeSession(activeSession)} />
+      {finalizeDialog}
+    </div>
+  }
+
+  const weekday = weekdayOf(date)
+  const visiblePeriods = periods.filter((entry) => showAllDays || entry.day_of_week === weekday).sort((a, b) => a.day_of_week - b.day_of_week || a.period - b.period)
+  return <div className="space-y-6">
+    <PageHeader title="Faculty attendance" description="Pick a period to open its roster. Everything stays on one screen until you submit." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />
+    {message && <Feedback message={message} />}
+    <Card>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <label className="block text-sm font-semibold text-text">Attendance date<Input className="mt-1 max-w-xs" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+        <Button variant="secondary" onClick={() => setShowAllDays((current) => !current)}><CalendarDays className="size-4" /> {showAllDays ? `Only ${days[weekday]}` : 'Show every assigned period'}</Button>
+      </div>
+    </Card>
+    <section>
+      <h2 className="mb-3 font-bold text-text">{showAllDays ? 'All assigned periods' : `${days[weekday]} periods`}</h2>
+      {visiblePeriods.length === 0
+        ? <EmptyState title="No periods scheduled" description={showAllDays ? 'You have no assigned timetable periods yet.' : `Nothing is scheduled for you on ${days[weekday]}. Switch to every assigned period to backfill another day.`} />
+        : <div className="grid gap-3 lg:grid-cols-2">{visiblePeriods.map((entry) => {
+          const session = sessionFor(entry.id)
+          const total = activeStudents(entry.section_id).length
+          const marked = session ? data.records.filter((row) => row.session_id === session.id).length : 0
+          // A period only exists on its own weekday; opening it against another date would
+          // collide with that date's real period on (section, date, period, type).
+          const offDay = entry.day_of_week !== weekday
+          return <PeriodCard key={entry.id} title={subjectName(entry.subject_id)} meta={`${days[entry.day_of_week]} · P${entry.period} · ${entry.starts_at}–${entry.ends_at}`} detail={`${sectionName(entry.section_id)} · ${entry.room}${entry.lab ? ` · ${entry.lab}` : ''} · ${total} student${total === 1 ? '' : 's'}`} session={offDay ? undefined : session} marked={marked} total={total} busy={starting === entry.id} offDayLabel={offDay ? days[entry.day_of_week] : undefined} onOpen={() => offDay ? setDate(shiftToWeekday(date, entry.day_of_week)) : void enterSheet(entry.id, () => attendanceRepository.openSubjectSession(entry.id, date))} />
+        })}</div>}
+    </section>
+    {classTeacherSections.length > 0 && <section>
+      <h2 className="mb-3 font-bold text-text">Daily check-in (Class Teacher)</h2>
+      <div className="grid gap-3 lg:grid-cols-2">{classTeacherSections.map((section) => {
+        const session = dailySessionFor(section.id)
+        const total = activeStudents(section.id).length
+        const marked = session ? data.records.filter((row) => row.session_id === session.id).length : 0
+        return <PeriodCard key={section.id} title={`${section.name} daily attendance`} meta={date} detail={`${total} enrolled student${total === 1 ? '' : 's'} · verifies student self check-ins`} session={session} marked={marked} total={total} busy={starting === section.id} onOpen={() => void enterSheet(section.id, () => attendanceRepository.openDailySession(section.id, date))} />
+      })}</div>
+    </section>}
+    <CorrectionReviewCard data={data} reload={reload} />
+    <StaffSelfCard data={data} reload={reload} userId={userId} />
+    {finalizeDialog}
+  </div>
 }
 
-function DailyVerificationCard({ data, session, sections, sectionId, setSectionId, students, saving, onOpen, onVerify, onSaveStatus, onFinalize }: { data: AttendanceData; session?: AttendanceSessionRow; sections: AttendanceData['sections']; sectionId: string; setSectionId: (id: string) => void; students: AttendanceData['profiles']; saving: boolean; onOpen: () => Promise<void>; onVerify: (record: AttendanceRecordRow, status: AttendanceStatus) => Promise<void>; onSaveStatus: (session: AttendanceSessionRow, studentId: string, status: AttendanceStatus) => Promise<void>; onFinalize: (session: AttendanceSessionRow) => void }) {
-  const records = data.records.filter((row) => row.session_id === session?.id)
+function PeriodCard({ title, meta, detail, session, marked, total, busy, offDayLabel, onOpen }: { title: string; meta: string; detail: string; session?: AttendanceSessionRow; marked: number; total: number; busy: boolean; offDayLabel?: string; onOpen: () => void }) {
   const locked = session?.status === 'finalized' || session?.status === 'locked'
-  return <Card><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-bold text-text">Daily check-in verification</h2><p className="mt-1 text-sm text-muted">Available to assigned Class Teachers for their sections.</p></div>{session && <Badge tone={tone(session.status)}>{session.status}</Badge>}</div><div className="mt-4 flex flex-wrap gap-3"><Select className="max-w-sm" value={sectionId} onChange={(event) => setSectionId(event.target.value)}><option value="">Select Class Teacher section</option>{sections.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</Select>{sectionId && !session && <Button disabled={saving} onClick={() => void onOpen()}>Open daily session</Button>}{session && !locked && <Button variant="secondary" onClick={() => onFinalize(session)}><LockKeyhole className="size-4" /> Finalize daily attendance</Button>}</div>{session && <div className="mt-4"><DataTable rows={students} empty={<EmptyState title="No active enrolled students" />} columns={[{ header: 'Student', render: (student) => <div><p className="font-semibold">{student.full_name}</p><p className="text-xs text-muted">{student.employee_or_register_number ?? '—'}</p></div> }, { header: 'Check-in', render: (student) => { const record = records.find((row) => row.student_id === student.id); return record?.check_in_time ? new Date(record.check_in_time).toLocaleTimeString() : 'Not checked in' } }, { header: 'Verification', render: (student) => { const record = records.find((row) => row.student_id === student.id); if (locked) return <Badge tone={tone(record?.status ?? 'absent')}>{record?.status ?? 'absent'}</Badge>; if (!record) return <Select disabled={saving} defaultValue="" onChange={(event) => void onSaveStatus(session, student.id, event.target.value as AttendanceStatus)}><option value="" disabled>Set status</option>{statuses.map((status) => <option key={status} value={status}>{status}</option>)}</Select>; return <Select disabled={saving} value={record.status} onChange={(event) => void onVerify(record, event.target.value as AttendanceStatus)}>{statuses.map((status) => <option key={status}>{status}</option>)}</Select> } }]} /></div>}</Card>
+  const complete = Boolean(session) && total > 0 && marked >= total
+  const state = offDayLabel ? 'Other day' : locked ? 'Finalized' : complete ? 'Submitted' : session ? 'In progress' : 'Not started'
+  const label = offDayLabel ? `Go to ${offDayLabel}` : locked ? 'View attendance' : complete ? 'Edit attendance' : session ? 'Continue attendance' : 'Start attendance'
+  return <Card className="flex flex-col gap-4">
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">{meta}</p>
+        <h3 className="mt-1 font-bold text-text">{title}</h3>
+        <p className="mt-1 text-sm text-muted">{detail}</p>
+      </div>
+      <Badge tone={offDayLabel ? 'muted' : locked ? 'success' : complete ? 'primary' : session ? 'warning' : 'muted'}>{state}</Badge>
+    </div>
+    <div className="mt-auto flex flex-wrap items-center justify-between gap-3">
+      <p className="text-xs text-muted">{offDayLabel ? `Only recordable on a ${offDayLabel}` : session ? `${marked} of ${total} marked` : 'No session opened yet'}</p>
+      <Button variant={offDayLabel ? 'secondary' : 'primary'} disabled={busy || total === 0} onClick={onOpen}>{busy ? 'Opening…' : label}</Button>
+    </div>
+  </Card>
 }
 
-function SubjectAttendanceCard({ data, period, session, students, search, setSearch, saving, onOpen, onSave, onAllPresent, onFinalize }: { data: AttendanceData; period: AttendanceData['timetable'][number]; session?: AttendanceSessionRow; students: AttendanceData['profiles']; search: string; setSearch: (value: string) => void; saving: boolean; onOpen: () => Promise<void>; onSave: (session: AttendanceSessionRow, studentId: string, status: AttendanceStatus) => Promise<void>; onAllPresent: () => Promise<void>; onFinalize: (session: AttendanceSessionRow) => void }) {
-  const records = data.records.filter((row) => row.session_id === session?.id)
-  const locked = session?.status === 'finalized' || session?.status === 'locked'
-  const filtered = students.filter((student) => `${student.full_name} ${student.employee_or_register_number ?? ''}`.toLowerCase().includes(search.toLowerCase()))
-  const counts = { present: records.filter((row) => row.status === 'present').length, late: records.filter((row) => row.status === 'late').length, absent: records.filter((row) => row.status === 'absent').length, pending: students.length - records.length }
-  return <Card><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-bold text-text">{data.subjects.find((row) => row.id === period.subject_id)?.name ?? 'Subject attendance'}</h2><p className="mt-1 text-sm text-muted">{period.starts_at}–{period.ends_at} · {period.room}</p></div>{!session ? <Button disabled={saving} onClick={() => void onOpen()}>Start attendance</Button> : <Badge tone={tone(session.status)}>{session.status}</Badge>}</div>{session && <><div className="mt-4 grid gap-3 grid-cols-2 sm:grid-cols-4">{Object.entries(counts).map(([label, value]) => <Card key={label} className="p-3"><p className="text-xs text-muted">{label}</p><p className="text-xl font-bold">{value}</p></Card>)}</div><div className="mt-4 flex flex-col gap-3 sm:flex-row"><Input placeholder="Search students" value={search} onChange={(event) => setSearch(event.target.value)} />{!locked && <Button variant="secondary" disabled={saving} onClick={() => void onAllPresent()}><CheckCheck className="size-4" /> All present</Button>}</div><div className="mt-4"><DataTable rows={filtered} empty={<EmptyState title="No active students in this section" />} columns={[{ header: 'Student', render: (student) => `${student.employee_or_register_number ?? '—'} · ${student.full_name}` }, { header: 'Status', render: (student) => { const record = records.find((row) => row.student_id === student.id); return locked ? <Badge tone={tone(record?.status ?? 'absent')}>{record?.status ?? 'absent'}</Badge> : <Select disabled={saving} value={record?.status ?? ''} onChange={(event) => void onSave(session, student.id, event.target.value as AttendanceStatus)}><option value="" disabled>Set status</option>{statuses.map((status) => <option key={status}>{status}</option>)}</Select> } }]} /></div>{!locked && <div className="mt-5 flex justify-end"><Button onClick={() => onFinalize(session)}><LockKeyhole className="size-4" /> Review and finalize</Button></div>}</>}</Card>
+/**
+ * Holds the whole roster in local state.  Marking a student never touches the network, so the
+ * page cannot reload underneath the user; the sheet reaches the database only on submit.
+ */
+function AttendanceSheet({ session, students, records, saving, onSubmit, onFinalize }: { session: AttendanceSessionRow; students: AttendanceData['profiles']; records: AttendanceRecordRow[]; saving: boolean; onSubmit: (entries: AttendanceSheetEntry[]) => Promise<void>; onFinalize: () => void }) {
+  const [draft, setDraft] = useState<Record<string, AttendanceStatus>>(() => Object.fromEntries(students.map((student) => [student.id, records.find((row) => row.student_id === student.id)?.status ?? 'present'])))
+  const [search, setSearch] = useState('')
+  const locked = session.status === 'finalized' || session.status === 'locked'
+  const statusOf = (studentId: string) => draft[studentId] ?? 'present'
+  const setAll = (status: AttendanceStatus) => setDraft(Object.fromEntries(students.map((student) => [student.id, status])))
+  const counts = { present: students.filter((student) => statusOf(student.id) === 'present').length, late: students.filter((student) => statusOf(student.id) === 'late').length, absent: students.filter((student) => statusOf(student.id) === 'absent').length }
+  const term = search.trim().toLowerCase()
+  const filtered = term ? students.filter((student) => `${student.full_name} ${student.employee_or_register_number ?? ''}`.toLowerCase().includes(term)) : students
+  const unsaved = students.some((student) => records.find((row) => row.student_id === student.id)?.status !== statusOf(student.id))
+  const submitted = students.length > 0 && records.length >= students.length
+
+  if (!students.length) return <Card><EmptyState title="No active students in this section" description="Enroll active students before recording attendance." /></Card>
+  return <Card className="pb-0">
+    <div className="grid grid-cols-3 gap-3">
+      {(['present', 'late', 'absent'] as const).map((status) => <div key={status} className="rounded-lg border border-border p-3 text-center"><p className="text-xs capitalize text-muted">{status}</p><p className="text-2xl font-bold text-text">{counts[status]}</p></div>)}
+    </div>
+    <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+      <Input placeholder="Search by name or register number" value={search} onChange={(event) => setSearch(event.target.value)} />
+      {!locked && <div className="flex gap-2">
+        <Button variant="secondary" onClick={() => setAll('present')}><CheckCheck className="size-4" /> All present</Button>
+        <Button variant="secondary" onClick={() => setAll('absent')}><UserX className="size-4" /> All absent</Button>
+      </div>}
+    </div>
+    <ul className="mt-2 divide-y divide-border">
+      {filtered.map((student) => {
+        const record = records.find((row) => row.student_id === student.id)
+        return <li key={student.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+          <div>
+            <p className="font-semibold text-text">{student.full_name}</p>
+            <p className="text-xs text-muted">{student.employee_or_register_number ?? '—'}{record?.check_in_time ? ` · Checked in ${new Date(record.check_in_time).toLocaleTimeString()}` : ''}</p>
+          </div>
+          {locked
+            ? <Badge tone={tone(statusOf(student.id))}>{statusOf(student.id)}</Badge>
+            : <StatusToggle name={student.full_name} value={statusOf(student.id)} onChange={(status) => setDraft((current) => ({ ...current, [student.id]: status }))} />}
+        </li>
+      })}
+      {filtered.length === 0 && <li className="py-6 text-center text-sm text-muted">No students match “{search}”.</li>}
+    </ul>
+    <div className="sticky bottom-0 -mx-5 mt-2 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border-t border-border bg-surface px-5 py-4">
+      <p className="text-sm text-muted">{locked ? 'This session is finalized and read-only.' : unsaved ? 'Unsaved changes — nothing is recorded until you submit.' : submitted ? 'All students submitted.' : 'Review the roster, then submit.'}</p>
+      {!locked && <div className="flex flex-wrap gap-3">
+        {submitted && !unsaved && <Button variant="secondary" disabled={saving} onClick={onFinalize}><LockKeyhole className="size-4" /> Finalize and lock</Button>}
+        <Button disabled={saving} onClick={() => void onSubmit(students.map((student) => ({ studentId: student.id, status: statusOf(student.id) })))}>{saving ? 'Submitting…' : 'Submit attendance'}</Button>
+      </div>}
+    </div>
+  </Card>
+}
+
+const statusStyles: Record<AttendanceStatus, string> = { present: 'bg-success text-primary-foreground', late: 'bg-warning text-primary-foreground', absent: 'bg-error text-primary-foreground' }
+
+function StatusToggle({ name, value, onChange }: { name: string; value: AttendanceStatus; onChange: (status: AttendanceStatus) => void }) {
+  return <div role="group" aria-label={`Attendance status for ${name}`} className="inline-flex overflow-hidden rounded-lg border border-border">
+    {statuses.map((status) => <button key={status} type="button" aria-pressed={value === status} onClick={() => onChange(status)} className={`min-h-9 px-3 text-xs font-semibold capitalize transition-colors ${value === status ? statusStyles[status] : 'bg-surface text-muted hover:bg-background'}`}>{status}</button>)}
+  </div>
 }
 
 function StaffAttendanceView(props: ViewProps) {
@@ -127,25 +364,184 @@ function StaffSelfCard({ data, reload, userId }: ViewProps) {
   const [saving, setSaving] = useState(false)
   const record = data.staffAttendance.find((row) => row.profile_id === userId && row.attendance_date === today())
   const act = async (action: 'in' | 'out') => { setSaving(true); setMessage(''); try { if (action === 'in') await attendanceRepository.checkInStaff(); else if (record) await attendanceRepository.checkOutStaff(record.id); await reload(); setMessage(`Staff check-${action} recorded.`) } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to update staff attendance.') } finally { setSaving(false) } }
-  return <Card><h2 className="font-bold text-text">My staff attendance</h2>{message && <p className="mt-2 text-sm text-muted">{message}</p>}<div className="mt-4 flex flex-wrap items-center gap-3">{record ? <><Badge tone={tone(record.status)}>{record.status}</Badge><span className="text-sm text-muted">In: {record.check_in_time ? new Date(record.check_in_time).toLocaleTimeString() : '—'} · Out: {record.check_out_time ? new Date(record.check_out_time).toLocaleTimeString() : '—'}</span>{!record.check_out_time && <Button disabled={saving} onClick={() => void act('out')}>Check out</Button>}</> : <Button disabled={saving} onClick={() => void act('in')}>Check in</Button>}</div></Card>
+  return <Card>
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <h2 className="font-bold text-text">My staff attendance</h2>
+        <p className="mt-1 text-sm text-muted">{today()}{record ? ` · In ${record.check_in_time ? new Date(record.check_in_time).toLocaleTimeString() : '—'} · Out ${record.check_out_time ? new Date(record.check_out_time).toLocaleTimeString() : '—'}` : ' · Not checked in yet'}</p>
+        {message && <p className="mt-2 text-sm text-muted">{message}</p>}
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        {record && <Badge tone={tone(record.status)}>{record.status}</Badge>}
+        {!record && <Button disabled={saving} onClick={() => void act('in')}><UserCheck className="size-4" /> {saving ? 'Checking in…' : 'Check in'}</Button>}
+        {record && !record.check_out_time && <Button disabled={saving} onClick={() => void act('out')}>{saving ? 'Checking out…' : 'Check out'}</Button>}
+        {record?.check_out_time && <span className="text-sm text-muted">Completed for today.</span>}
+      </div>
+    </div>
+  </Card>
 }
 
-function DepartmentAttendance({ data, reload, userId }: ViewProps) {
-  const [date, setDate] = useState(today())
+/**
+ * Department-wide view for HOD and Super Admin.  Defaults to every recorded date rather than a
+ * single day, so "all attendance" is the starting point and narrowing is opt-in.
+ */
+function DepartmentAttendance({ data, reload, userId, canManage }: ViewProps & { canManage: boolean }) {
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
   const [sectionId, setSectionId] = useState('all')
-  const sessions = data.sessions.filter((row) => row.attendance_date === date && (sectionId === 'all' || row.section_id === sectionId))
+  const [subjectFilter, setSubjectFilter] = useState('all')
+  const [search, setSearch] = useState('')
+  const [detail, setDetail] = useState<AttendanceSessionRow | null>(null)
+
+  const profileName = (id: string | null) => data.profiles.find((row) => row.id === id)?.full_name ?? '—'
+  const sectionName = (id: string | null) => data.sections.find((row) => row.id === id)?.name ?? '—'
+  const subjectName = (id: string | null) => data.subjects.find((row) => row.id === id)?.name ?? 'Daily attendance'
+  const keyOf = (session: AttendanceSessionRow) => session.subject_id ?? DAILY_KEY
+  const activeStudents = (id: string) => data.enrollments.filter((row) => row.section_id === id && row.status === 'active').map((row) => data.profiles.find((profile) => profile.id === row.student_id)).filter((row): row is NonNullable<typeof row> => Boolean(row))
+
+  const inRange = (date: string) => (!fromDate || date >= fromDate) && (!toDate || date <= toDate)
+  const sessions = data.sessions
+    .filter((row) => inRange(row.attendance_date) && (sectionId === 'all' || row.section_id === sectionId) && (subjectFilter === 'all' || keyOf(row) === subjectFilter))
+    .sort((a, b) => b.attendance_date.localeCompare(a.attendance_date) || (b.period ?? 0) - (a.period ?? 0))
   const sessionIds = new Set(sessions.map((row) => row.id))
   const records = data.records.filter((row) => sessionIds.has(row.session_id))
-  const staff = data.staffAttendance.filter((row) => row.attendance_date === date)
-  return <div className="space-y-6"><PageHeader title="Department attendance" description="RLS-scoped attendance overview for the managed department." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} /><Card><div className="grid gap-3 sm:grid-cols-2"><Input type="date" value={date} onChange={(event) => setDate(event.target.value)} /><Select value={sectionId} onChange={(event) => setSectionId(event.target.value)}><option value="all">All sections</option>{data.sections.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</Select></div></Card><div className="grid gap-4 sm:grid-cols-3"><Metric label="Sessions" value={sessions.length} /><Metric label="Student records" value={records.length} /><Metric label="Staff records" value={staff.length} /></div><Card><h2 className="font-bold text-text">Attendance sessions</h2><div className="mt-4"><DataTable rows={sessions} empty={<EmptyState title="No sessions for this date" />} columns={[{ header: 'Section / type', render: (session) => `${data.sections.find((row) => row.id === session.section_id)?.name ?? '—'} · ${session.session_type}` }, { header: 'Subject', render: (session) => data.subjects.find((row) => row.id === session.subject_id)?.name ?? 'Daily attendance' }, { header: 'Faculty', render: (session) => data.profiles.find((row) => row.id === session.faculty_id)?.full_name ?? '—' }, { header: 'Status', render: (session) => <Badge tone={tone(session.status)}>{session.status}</Badge> }, { header: 'Records', render: (session) => data.records.filter((row) => row.session_id === session.id).length }]} /></div></Card><StaffManagementCard data={data} date={date} reload={reload} /><CorrectionReviewCard data={data} reload={reload} /><StaffSelfCard data={data} reload={reload} userId={userId} /></div>
+  const summary = summarizeRecords(records)
+  const openSessions = sessions.filter((row) => row.status !== 'finalized' && row.status !== 'locked')
+  const staff = data.staffAttendance.filter((row) => inRange(row.attendance_date))
+  const scopeLabel = !fromDate && !toDate ? 'All recorded attendance' : `${fromDate || 'start'} → ${toDate || 'today'}`
+
+  const subjectKeys = [...new Set(data.sessions.map(keyOf))]
+  const sectionRows = data.sections.map((section) => {
+    const ids = new Set(sessions.filter((row) => row.section_id === section.id).map((row) => row.id))
+    return { id: section.id, label: `Year ${section.year_number} · ${section.name}`, students: activeStudents(section.id).length, ...summarizeRecords(records.filter((row) => ids.has(row.session_id))) }
+  })
+  const subjectRows = subjectKeys.map((key) => {
+    const ids = new Set(sessions.filter((row) => keyOf(row) === key).map((row) => row.id))
+    return { id: key, label: key === DAILY_KEY ? 'Daily attendance' : subjectName(key), sessions: ids.size, ...summarizeRecords(records.filter((row) => ids.has(row.session_id))) }
+  }).filter((row) => row.total > 0)
+  const term = search.trim().toLowerCase()
+  const studentRows = [...new Set(records.map((row) => row.student_id))]
+    .map((id) => { const profile = data.profiles.find((row) => row.id === id); return { id, label: profile?.full_name ?? 'Unknown student', register: profile?.employee_or_register_number ?? '—', ...summarizeRecords(records.filter((row) => row.student_id === id)) } })
+    .filter((row) => !term || `${row.label} ${row.register}`.toLowerCase().includes(term))
+    .sort((a, b) => (a.percentage ?? 100) - (b.percentage ?? 100))
+
+  const preset = (kind: 'all' | 'today' | 'month') => {
+    if (kind === 'all') { setFromDate(''); setToDate('') }
+    else if (kind === 'today') { setFromDate(today()); setToDate(today()) }
+    else { setFromDate(`${today().slice(0, 7)}-01`); setToDate(today()) }
+  }
+
+  return <div className="space-y-6">
+    <PageHeader title="Department attendance" description="Every attendance record visible to your role, across sections, subjects and students." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />
+    {canManage && <StaffSelfCard data={data} reload={reload} userId={userId} />}
+    <Card>
+      <div className="grid gap-3 lg:grid-cols-4">
+        <label className="text-sm font-semibold text-text">From<Input className="mt-1" type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
+        <label className="text-sm font-semibold text-text">To<Input className="mt-1" type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
+        <label className="text-sm font-semibold text-text">Section<Select className="mt-1" value={sectionId} onChange={(event) => setSectionId(event.target.value)}><option value="all">All sections</option>{data.sections.map((row) => <option key={row.id} value={row.id}>Year {row.year_number} · {row.name} · {activeStudents(row.id).length} student{activeStudents(row.id).length === 1 ? '' : 's'}</option>)}</Select></label>
+        <label className="text-sm font-semibold text-text">Subject<Select className="mt-1" value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}><option value="all">All subjects</option>{subjectKeys.map((key) => <option key={key} value={key}>{key === DAILY_KEY ? 'Daily attendance' : subjectName(key)}</option>)}</Select></label>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button variant="secondary" className="min-h-8 px-3" onClick={() => preset('all')}><CalendarDays className="size-4" /> All time</Button>
+        <Button variant="secondary" className="min-h-8 px-3" onClick={() => preset('month')}>This month</Button>
+        <Button variant="secondary" className="min-h-8 px-3" onClick={() => preset('today')}>Today</Button>
+      </div>
+    </Card>
+
+    <section>
+      <h2 className="mb-3 font-bold text-text">{scopeLabel}</h2>
+      <div className="grid gap-3 grid-cols-2 lg:grid-cols-5">
+        <StatTile label="Classes recorded" value={summary.total} />
+        <StatTile label="Present" value={summary.present + summary.late} accent="text-success" />
+        <StatTile label="Absent" value={summary.absent} accent="text-error" />
+        <StatTile label="Attendance" value={summary.percentage === null ? '—' : `${summary.percentage}%`} accent={summary.percentage !== null && summary.percentage < 75 ? 'text-error' : 'text-success'} />
+        <StatTile label="Sessions" value={sessions.length} accent={openSessions.length ? 'text-warning' : 'text-text'} />
+      </div>
+      <PercentageBar percentage={summary.percentage} />
+      {openSessions.length > 0 && <p className="mt-2 text-sm text-warning">{openSessions.length} session{openSessions.length === 1 ? '' : 's'} still open or in draft — not yet finalized by Faculty.</p>}
+    </section>
+
+    <Card>
+      <h2 className="font-bold text-text">Section-wise attendance</h2>
+      <div className="mt-4"><DataTable rows={sectionRows} empty={<EmptyState title="No sections" />} columns={[
+        { header: 'Section', render: (row) => <div><p className="font-semibold">{row.label}</p><p className="text-xs text-muted">{row.students} active student{row.students === 1 ? '' : 's'}</p></div> },
+        { header: 'Classes', render: (row) => row.total },
+        { header: 'Present', render: (row) => row.present + row.late },
+        { header: 'Absent', render: (row) => row.absent },
+        { header: 'Attendance', render: (row) => row.percentage === null ? '—' : <Badge tone={row.percentage < 75 ? 'warning' : 'success'}>{row.percentage}%</Badge> },
+        { header: 'View', render: (row) => <Button className="min-h-8 px-3" variant={sectionId === row.id ? 'primary' : 'secondary'} onClick={() => setSectionId(sectionId === row.id ? 'all' : row.id)}>{sectionId === row.id ? 'Showing' : 'Show'}</Button> },
+      ]} /></div>
+    </Card>
+
+    <Card>
+      <h2 className="font-bold text-text">Subject-wise attendance</h2>
+      <div className="mt-4"><DataTable rows={subjectRows} empty={<EmptyState title="No attendance in this range" />} columns={[
+        { header: 'Subject', render: (row) => <div><p className="font-semibold">{row.label}</p><p className="text-xs text-muted">{row.sessions} session{row.sessions === 1 ? '' : 's'}</p></div> },
+        { header: 'Classes', render: (row) => row.total },
+        { header: 'Present', render: (row) => row.present + row.late },
+        { header: 'Absent', render: (row) => row.absent },
+        { header: 'Attendance', render: (row) => row.percentage === null ? '—' : <Badge tone={row.percentage < 75 ? 'warning' : 'success'}>{row.percentage}%</Badge> },
+        { header: 'View', render: (row) => <Button className="min-h-8 px-3" variant={subjectFilter === row.id ? 'primary' : 'secondary'} onClick={() => setSubjectFilter(subjectFilter === row.id ? 'all' : row.id)}>{subjectFilter === row.id ? 'Showing' : 'Show'}</Button> },
+      ]} /></div>
+    </Card>
+
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div><h2 className="font-bold text-text">Student attendance</h2><p className="mt-1 text-sm text-muted">Lowest attendance first, so shortfalls surface immediately.</p></div>
+        <Input className="max-w-xs" placeholder="Search name or register number" value={search} onChange={(event) => setSearch(event.target.value)} />
+      </div>
+      <div className="mt-4"><DataTable rows={studentRows} empty={<EmptyState title="No student records in this range" />} columns={[
+        { header: 'Student', render: (row) => <div><p className="font-semibold">{row.label}</p><p className="text-xs text-muted">{row.register}</p></div> },
+        { header: 'Classes', render: (row) => row.total },
+        { header: 'Present', render: (row) => row.present + row.late },
+        { header: 'Absent', render: (row) => row.absent },
+        { header: 'Attendance', render: (row) => row.percentage === null ? '—' : <Badge tone={row.percentage < 75 ? 'warning' : 'success'}>{row.percentage}%</Badge> },
+      ]} /></div>
+    </Card>
+
+    <Card>
+      <h2 className="font-bold text-text">Attendance sessions</h2>
+      <p className="mt-1 text-sm text-muted">{sessions.length} session{sessions.length === 1 ? '' : 's'} · select one to see who was marked.</p>
+      <div className="mt-4"><DataTable rows={sessions} empty={<EmptyState title="No sessions in this range" />} columns={[
+        { header: 'Date', render: (session) => <div><p className="font-semibold">{session.attendance_date}</p><p className="text-xs text-muted">{session.period ? `Period ${session.period}` : readable(session.session_type)}</p></div> },
+        { header: 'Section / subject', render: (session) => <div><p>{subjectName(session.subject_id)}</p><p className="text-xs text-muted">{sectionName(session.section_id)}</p></div> },
+        { header: 'Faculty', render: (session) => profileName(session.faculty_id) },
+        { header: 'Status', render: (session) => <Badge tone={tone(session.status)}>{session.status}</Badge> },
+        { header: 'Marked', render: (session) => `${data.records.filter((row) => row.session_id === session.id).length} / ${activeStudents(session.section_id).length}` },
+        { header: 'Roster', render: (session) => <Button className="min-h-8 px-3" variant="secondary" onClick={() => setDetail(session)}>View</Button> },
+      ]} /></div>
+    </Card>
+
+    <StaffManagementCard data={data} rows={staff} reload={reload} canManage={canManage} />
+    {canManage ? <CorrectionReviewCard data={data} reload={reload} /> : <CorrectionMonitorCard data={data} />}
+
+    <Modal isOpen={Boolean(detail)} title={detail ? `${subjectName(detail.subject_id)} · ${detail.attendance_date}` : ''} onClose={() => setDetail(null)}>
+      {detail && <>
+        <p className="text-sm text-muted">{sectionName(detail.section_id)} · {profileName(detail.faculty_id)} · {detail.status}</p>
+        <div className="mt-4 max-h-96 overflow-y-auto"><DataTable rows={activeStudents(detail.section_id)} empty={<EmptyState title="No active enrolled students" />} columns={[
+          { header: 'Student', render: (student) => <div><p className="font-semibold">{student.full_name}</p><p className="text-xs text-muted">{student.employee_or_register_number ?? '—'}</p></div> },
+          { header: 'Status', render: (student) => { const record = data.records.find((row) => row.session_id === detail.id && row.student_id === student.id); return record ? <Badge tone={tone(record.status)}>{record.status}</Badge> : <span className="text-xs text-muted">Not marked</span> } },
+        ]} /></div>
+      </>}
+    </Modal>
+  </div>
 }
 
-function StaffManagementCard({ data, date, reload }: { data: AttendanceData; date: string; reload: () => Promise<void> }) {
+function StaffManagementCard({ data, rows, reload, canManage }: { data: AttendanceData; rows: StaffAttendanceRow[]; reload: () => Promise<void>; canManage: boolean }) {
   const [savingId, setSavingId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
-  const rows = data.staffAttendance.filter((row) => row.attendance_date === date)
   const update = async (id: string, status: AttendanceStatus) => { setSavingId(id); setMessage(''); try { await attendanceRepository.updateStaffAttendance(id, status); await reload(); setMessage('Staff attendance updated.') } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to update staff attendance.') } finally { setSavingId(null) } }
-  return <Card><h2 className="font-bold text-text">Staff attendance</h2>{message && <p className="mt-2 text-sm text-muted">{message}</p>}<div className="mt-4"><DataTable rows={rows} empty={<EmptyState title="No staff attendance for this date" />} columns={[{ header: 'Staff', render: (row) => data.profiles.find((profile) => profile.id === row.profile_id)?.full_name ?? '—' }, { header: 'Check-in / out', render: (row) => `${row.check_in_time ? new Date(row.check_in_time).toLocaleTimeString() : '—'} / ${row.check_out_time ? new Date(row.check_out_time).toLocaleTimeString() : '—'}` }, { header: 'Status', render: (row) => <Select disabled={savingId === row.id} value={row.status} onChange={(event) => void update(row.id, event.target.value as AttendanceStatus)}>{statuses.map((status) => <option key={status}>{status}</option>)}</Select> }]} /></div></Card>
+  const ordered = [...rows].sort((a, b) => b.attendance_date.localeCompare(a.attendance_date))
+  return <Card><h2 className="font-bold text-text">Staff attendance</h2>{message && <p className="mt-2 text-sm text-muted">{message}</p>}<div className="mt-4"><DataTable rows={ordered} empty={<EmptyState title="No staff attendance in this range" />} columns={[
+    { header: 'Staff', render: (row) => <div><p className="font-semibold">{data.profiles.find((profile) => profile.id === row.profile_id)?.full_name ?? '—'}</p><p className="text-xs text-muted">{row.attendance_date}</p></div> },
+    { header: 'Check-in / out', render: (row) => `${row.check_in_time ? new Date(row.check_in_time).toLocaleTimeString() : '—'} / ${row.check_out_time ? new Date(row.check_out_time).toLocaleTimeString() : '—'}` },
+    { header: 'Status', render: (row) => canManage ? <Select disabled={savingId === row.id} value={row.status} onChange={(event) => void update(row.id, event.target.value as AttendanceStatus)}>{statuses.map((status) => <option key={status}>{status}</option>)}</Select> : <Badge tone={tone(row.status)}>{row.status}</Badge> },
+  ]} /></div></Card>
+}
+
+function CorrectionMonitorCard({ data }: { data: AttendanceData }) {
+  const pending = data.corrections.filter((row) => row.status === 'pending')
+  return <Card><h2 className="font-bold text-text">Attendance corrections</h2><div className="mt-4"><DataTable rows={pending} empty={<EmptyState title="No pending attendance corrections" />} columns={[{ header: 'Student', render: (row) => data.profiles.find((profile) => profile.id === row.student_id)?.full_name ?? '—' }, { header: 'Requested change', render: (row) => `${row.original_status} -> ${row.requested_status}` }, { header: 'Reason', render: (row) => row.reason }, { header: 'State', render: (row) => <Badge tone={tone(row.status)}>{row.status}</Badge> }]} /></div></Card>
 }
 
 function CorrectionReviewCard({ data, reload }: { data: AttendanceData; reload: () => Promise<void> }) {
@@ -163,9 +559,6 @@ function CorrectionRequestDialog({ record, requestedStatus, setRequestedStatus, 
   return <Modal isOpen={Boolean(record)} title="Request attendance correction" onClose={onClose}>{record && <div className="space-y-4"><p className="text-sm text-muted">Current status: {record.status}</p><label className="block text-sm font-semibold">Requested status<Select className="mt-1" value={requestedStatus} onChange={(event) => setRequestedStatus(event.target.value as AttendanceStatus)}>{statuses.filter((status) => status !== record.status).map((status) => <option key={status}>{status}</option>)}</Select></label><label className="block text-sm font-semibold">Reason<Textarea className="mt-1" value={reason} onChange={(event) => setReason(event.target.value)} /></label><div className="flex justify-end gap-3"><Button variant="secondary" disabled={saving} onClick={onClose}>Cancel</Button><Button disabled={saving} onClick={() => void onSubmit()}>{saving ? 'Submitting…' : 'Submit correction'}</Button></div></div>}</Modal>
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
-  return <Card><p className="text-sm text-muted">{label}</p><p className="mt-1 text-2xl font-bold text-text">{value}</p></Card>
-}
 
 function Feedback({ message }: { message: string }) {
   const success = /submitted|opened|saved|finalized|recorded|marked/i.test(message)

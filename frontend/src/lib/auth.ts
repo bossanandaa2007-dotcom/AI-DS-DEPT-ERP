@@ -6,7 +6,7 @@ import type { UserRole } from '@/types'
 
 const rolePermissions: Record<UserRole, Permission[]> = {
   [USER_ROLES.superAdmin]: Object.values(PERMISSIONS),
-  [USER_ROLES.hod]: [PERMISSIONS.viewDepartmentReports, PERMISSIONS.manageAttendance, PERMISSIONS.manageMarks, PERMISSIONS.reviewStudentRequests],
+  [USER_ROLES.hod]: [PERMISSIONS.viewDepartmentReports],
   [USER_ROLES.faculty]: [PERMISSIONS.manageAttendance, PERMISSIONS.manageMarks, PERMISSIONS.reviewStudentRequests],
   [USER_ROLES.labAssistant]: [PERMISSIONS.manageAttendance, PERMISSIONS.reviewStudentRequests],
   [USER_ROLES.student]: [PERMISSIONS.viewOwnRecords],

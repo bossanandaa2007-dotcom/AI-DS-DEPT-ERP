@@ -14,6 +14,24 @@ export type MessageRecord = Tables['messages']['Row']
 export type AuditLogRecord = Tables['audit_logs']['Row']
 export type AssignmentOption = { id: string; subjectId: string; sectionId: string; label: string }
 
+/**
+ * `public.floor_duties` is created by 202608060112_floor_duties.sql, which postdates the
+ * generated `database.types.ts`, so it is described here instead. Regenerate the types and
+ * this shape plus `looseFrom` below can both go.
+ */
+export type FloorDutyRecord = {
+  id: string
+  department_id: string
+  academic_year_id: string
+  faculty_id: string
+  day_of_week: number
+  shift: string
+  starts_at: string | null
+  ends_at: string | null
+  display_order: number
+  is_active: boolean
+}
+
 export type OperationsData = {
   context: OperationsContext
   portions: PortionRecord[]
@@ -23,12 +41,18 @@ export type OperationsData = {
   messages: MessageRecord[]
   recipients: Profile[]
   timetable: Tables['timetable_entries']['Row'][]
+  floorDuties: FloorDutyRecord[]
+  sections: Pick<Tables['sections']['Row'], 'id' | 'name' | 'year_number'>[]
 }
 
 const client = () => {
   if (!supabase) throw new Error('Supabase is not configured. Set the browser-safe Supabase environment variables.')
   return supabase
 }
+
+/** Single cast site for tables the generated types do not know about yet. */
+type LooseResult = { data: unknown[] | null; error: { message: string; code?: string } | null }
+const looseFrom = (table: string) => (client() as unknown as { from: (name: string) => { select: (columns: string) => PromiseLike<LooseResult> } }).from(table)
 
 const message = (error: { message: string; code?: string } | null, fallback: string) => {
   if (!error) return
@@ -95,7 +119,7 @@ async function listAssignments(context: OperationsContext): Promise<AssignmentOp
 export const departmentOperationsRepository = {
   async load(): Promise<OperationsData> {
     const context = await currentContext()
-    const [portionsResult, assignments, announcements, complaints, messages, recipientsResult, timetableResult] = await Promise.all([
+    const [portionsResult, assignments, announcements, complaints, messages, recipientsResult, timetableResult, floorDutiesResult, sectionsResult] = await Promise.all([
       client().from('portion_updates').select('*').order('updated_at', { ascending: false }),
       listAssignments(context),
       listAnnouncements(),
@@ -103,12 +127,19 @@ export const departmentOperationsRepository = {
       client().from('messages').select('*').order('created_at', { ascending: false }),
       client().from('profiles').select('id,full_name,role,status,department_id,section_id').eq('department_id', context.department_id).eq('status', 'active').order('full_name'),
       client().from('timetable_entries').select('*').order('day_of_week').order('period'),
+      looseFrom('floor_duties').select('*'),
+      client().from('sections').select('id,name,year_number').order('year_number').order('name'),
     ])
     message(portionsResult.error, 'Unable to load portion progress.')
     message(messages.error, 'Unable to load messages.')
     message(recipientsResult.error, 'Unable to load available message recipients.')
     message(timetableResult.error, 'Unable to load timetable entries.')
-    return { context, portions: portionsResult.data ?? [], assignments, announcements, complaints, messages: messages.data ?? [], recipients: recipientsResult.data ?? [], timetable: timetableResult.data ?? [] }
+    // Students cannot read the roster and the table may predate this deployment, so a failure
+    // here degrades to an empty list rather than breaking the whole page.
+    const floorDuties = (floorDutiesResult.error ? [] : (floorDutiesResult.data ?? []) as FloorDutyRecord[])
+      .filter((duty) => duty.is_active)
+      .sort((a, b) => a.day_of_week - b.day_of_week || a.display_order - b.display_order)
+    return { context, portions: portionsResult.data ?? [], assignments, announcements, complaints, messages: messages.data ?? [], recipients: recipientsResult.data ?? [], timetable: timetableResult.data ?? [], floorDuties, sections: sectionsResult.data ?? [] }
   },
 
   async savePortion(input: { timetableEntryId: string; subjectId: string; sectionId: string; unit: string; plannedTopic: string; completedTopic: string; completionPercentage: number; nextTopic: string }) {
@@ -178,7 +209,7 @@ export const departmentOperationsRepository = {
 
   async reviewComplaint(input: { id: string; status: 'in_review' | 'resolved'; response: string; assignedTo: string | null }) {
     const context = await currentContext()
-    if (context.role !== 'super_admin' && context.role !== 'hod') throw new Error('Only department administrators can review complaints.')
+    if (context.role !== 'super_admin' && context.role !== 'hod') throw new Error('Only HOD or Super Admin can review complaints.')
     if (!input.response.trim()) throw new Error('Add a response before changing complaint status.')
     const { data: current, error: currentError } = await client().from('complaints').select('status').eq('id', input.id).single()
     message(currentError, 'Unable to load the complaint.')
@@ -220,6 +251,56 @@ export const departmentOperationsRepository = {
     message(profilesResult.error, 'Unable to load audit actors.')
     const profiles = profilesResult.data ?? []
     const records = context.role === 'hod' ? (logsResult.data ?? []).filter((log) => profiles.some((profile) => profile.id === log.actor_id && profile.department_id === context.department_id)) : logsResult.data ?? []
-    return { context, records, profiles }
+    return { context, records, profiles, references: await auditReferences(profiles) }
   },
+}
+
+/**
+ * Audit rows identify their subject by raw UUID, in `record_reference` and inside the metadata
+ * payloads. Showing those to a HOD is noise — `d277d43b-ca34-42c7-a9d2-b6f...` says nothing
+ * about which request was approved. This builds one lookup from every id an audit row is
+ * likely to name, so the page can print "Leave · Boss Anandaa S" instead.
+ *
+ * Anything still unresolved is a record that has since been deleted, or one this viewer cannot
+ * read; the page says so rather than falling back to the UUID.
+ */
+async function auditReferences(profiles: Profile[]) {
+  const labels = new Map<string, string>()
+  for (const profile of profiles) labels.set(profile.id, profile.full_name)
+
+  const [departments, sections, subjects, sessions, assessments, requests, attachments] = await Promise.all([
+    client().from('departments').select('id,name'),
+    client().from('sections').select('id,year_number,name'),
+    client().from('subjects').select('id,code,name'),
+    client().from('attendance_sessions').select('id,section_id,subject_id,attendance_date,period,session_type'),
+    client().from('assessments').select('id,title,subject_id'),
+    client().from('requests').select('id,request_type,requester_id'),
+    client().from('attachments').select('id,filename'),
+  ])
+
+  for (const row of departments.data ?? []) labels.set(row.id, row.name)
+  const sectionLabel = new Map<string, string>()
+  for (const row of sections.data ?? []) {
+    const label = `Year ${row.year_number} · ${row.name}`
+    sectionLabel.set(row.id, label)
+    labels.set(row.id, label)
+  }
+  const subjectLabel = new Map<string, string>()
+  for (const row of subjects.data ?? []) {
+    subjectLabel.set(row.id, row.code)
+    labels.set(row.id, `${row.code} · ${row.name}`)
+  }
+  for (const row of sessions.data ?? []) {
+    const parts = [subjectLabel.get(row.subject_id ?? '') ?? row.session_type, sectionLabel.get(row.section_id), row.attendance_date, row.period ? `P${row.period}` : null]
+    labels.set(row.id, parts.filter(Boolean).join(' · '))
+  }
+  for (const row of assessments.data ?? []) {
+    labels.set(row.id, [row.title, subjectLabel.get(row.subject_id ?? '')].filter(Boolean).join(' · '))
+  }
+  for (const row of requests.data ?? []) {
+    labels.set(row.id, [row.request_type.replaceAll('_', ' '), labels.get(row.requester_id)].filter(Boolean).join(' · '))
+  }
+  for (const row of attachments.data ?? []) labels.set(row.id, row.filename)
+
+  return labels
 }

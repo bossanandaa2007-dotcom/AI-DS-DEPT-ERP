@@ -1,5 +1,8 @@
+import { weekdayOf } from '@/lib/date-time'
 import { supabase } from '@/lib/supabase'
 import type { Database, Json } from '@/types/database.types'
+
+const dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
 type Tables = Database['public']['Tables']
 export type AttendanceSessionRow = Tables['attendance_sessions']['Row']
@@ -14,6 +17,8 @@ export type TimetableRow = Tables['timetable_entries']['Row']
 export type SubjectRow = Tables['subjects']['Row']
 export type SectionRow = Tables['sections']['Row']
 export type FacultyAssignmentRow = Tables['faculty_assignments']['Row']
+
+export interface AttendanceSheetEntry { studentId: string; status: AttendanceStatus }
 
 export interface AttendanceData {
   sessions: AttendanceSessionRow[]
@@ -64,15 +69,32 @@ export const attendanceRepository = {
     return { sessions, records, corrections, staffAttendance, profiles, enrollments, timetable, subjects, sections, assignments }
   },
 
+  /**
+   * Opens, or re-enters, the attendance session for one timetable period on one date.
+   * A section has a single period N on any given date, which is exactly what the
+   * `(section_id, attendance_date, period, session_type)` unique key encodes, so that key —
+   * not `timetable_entry_id` — decides whether a session already exists.
+   */
   async openSubjectSession(timetableEntryId: string, attendanceDate: string): Promise<AttendanceSessionRow> {
     const user = await currentUser()
     const { data: entry, error: entryError } = await client().from('timetable_entries').select('*').eq('id', timetableEntryId).maybeSingle()
     message(entryError, 'Unable to load the timetable entry.')
     if (!entry) throw new Error('Timetable entry was not found.')
+    if (entry.day_of_week !== weekdayOf(attendanceDate)) throw new Error(`This is a ${dayNames[entry.day_of_week]} period, but ${attendanceDate} is a ${dayNames[weekdayOf(attendanceDate)]}. Change the attendance date to record it.`)
     const { data: assignment, error: assignmentError } = await client().from('faculty_assignments').select('id,subject_id,assignment_type').eq('faculty_id', user.id).eq('section_id', entry.section_id).eq('is_active', true)
     message(assignmentError, 'Unable to verify the Faculty assignment.')
     if (!(assignment ?? []).some((item) => item.subject_id === entry.subject_id || item.assignment_type === 'class_teacher')) throw new Error('This timetable period is outside your active Faculty assignment.')
     const sessionType: Database['public']['Enums']['attendance_session_type'] = entry.lab ? 'lab' : 'subject'
+    const existing = await client().from('attendance_sessions').select('*').eq('section_id', entry.section_id).eq('attendance_date', attendanceDate).eq('period', entry.period).eq('session_type', sessionType).maybeSingle()
+    message(existing.error, 'Unable to check the attendance session.')
+    if (existing.data?.timetable_entry_id === entry.id) return existing.data
+    if (existing.data) {
+      // Left behind by an earlier build that let a period be opened on another weekday's date.
+      // This date can only belong to this period, so re-point the session instead of failing.
+      const repaired = await client().from('attendance_sessions').update({ timetable_entry_id: entry.id, subject_id: entry.subject_id }).eq('id', existing.data.id).select().single()
+      message(repaired.error, 'An attendance session recorded against a different period already exists for this date.')
+      if (repaired.data) return repaired.data
+    }
     const { data, error } = await client().from('attendance_sessions').insert({
       session_type: sessionType,
       timetable_entry_id: entry.id,
@@ -90,6 +112,9 @@ export const attendanceRepository = {
 
   async openDailySession(sectionId: string, attendanceDate: string): Promise<AttendanceSessionRow> {
     const user = await currentUser()
+    const existing = await client().from('attendance_sessions').select('*').eq('section_id', sectionId).eq('attendance_date', attendanceDate).eq('session_type', 'daily').maybeSingle()
+    message(existing.error, 'Unable to check the daily attendance session.')
+    if (existing.data) return existing.data
     const { data, error } = await client().from('attendance_sessions').insert({
       session_type: 'daily',
       section_id: sectionId,
@@ -99,22 +124,6 @@ export const attendanceRepository = {
     }).select().single()
     message(error, 'Unable to open daily attendance. Only the assigned Class Teacher can do this.')
     if (!data) throw new Error('Unable to open daily attendance.')
-    return data
-  },
-
-  async studentDailyCheckIn(sessionId: string): Promise<AttendanceRecordRow> {
-    const user = await currentUser()
-    const checkedInAt = new Date().toISOString()
-    const verification: Json = { source: 'student_check_in', verification_state: 'pending', submitted_at: checkedInAt }
-    const { data, error } = await client().from('attendance_records').insert({
-      session_id: sessionId,
-      student_id: user.id,
-      status: 'present',
-      check_in_time: checkedInAt,
-      verification_data: verification,
-    }).select().single()
-    message(error, 'Unable to record the student check-in.')
-    if (!data) throw new Error('Unable to record the student check-in.')
     return data
   },
 
@@ -135,8 +144,28 @@ export const attendanceRepository = {
   },
 
   async saveAllAttendance(session: AttendanceSessionRow, students: ProfileRow[], status: AttendanceStatus): Promise<void> {
+    await this.submitAttendanceSheet(session, students.map((student) => ({ studentId: student.id, status })))
+  },
+
+  /**
+   * Writes a whole marked roster in one round trip.  The Faculty attendance sheet keeps every
+   * change local until submit, so this is the single point where the sheet reaches the database.
+   */
+  async submitAttendanceSheet(session: AttendanceSessionRow, entries: AttendanceSheetEntry[]): Promise<void> {
     if (session.status === 'finalized' || session.status === 'locked') throw new Error('Finalized attendance is read-only.')
-    for (const student of students) await this.saveAttendanceRecord(session, student.id, status)
+    if (!entries.length) throw new Error('There are no students to submit attendance for.')
+    const user = await currentUser()
+    const enrolled = await client().from('enrollments').select('student_id').eq('section_id', session.section_id).eq('status', 'active')
+    message(enrolled.error, 'Unable to validate student enrollment.')
+    const active = new Set((enrolled.data ?? []).map((row) => row.student_id))
+    if (entries.some((entry) => !active.has(entry.studentId))) throw new Error('One or more students are no longer actively enrolled in this section.')
+    // Submitting a daily sheet is the Class Teacher verifying the students' own check-ins.
+    const verification: Json | undefined = session.session_type === 'daily' ? { verification_state: 'verified', verified_by: user.id, verified_at: new Date().toISOString() } : undefined
+    const { error } = await client().from('attendance_records').upsert(
+      entries.map((entry) => ({ session_id: session.id, student_id: entry.studentId, status: entry.status, ...(verification ? { verification_data: verification } : {}) })),
+      { onConflict: 'session_id,student_id' },
+    )
+    message(error, 'Unable to submit attendance.')
   },
 
   async verifyDailyRecord(recordId: string, status: AttendanceStatus): Promise<void> {

@@ -32,6 +32,7 @@ import {
   type RequestWorkflowData,
 } from '@/services/supabase/requestWorkflowRepository'
 import type { Json } from '@/types/database.types'
+import { isTeachingStaff } from '@/lib/auth'
 
 const studentTypes: RequestType[] = ['student_leave', 'gate_pass', 'od']
 const projectStatuses = ['proposed', 'active', 'completed', 'archived']
@@ -74,7 +75,8 @@ export function RequestsPage() {
   if (currentUser.role === 'student') return <StudentWorkspace {...props} />
   if (currentUser.role === 'faculty') return <FacultyWorkspace {...props} />
   if (currentUser.role === 'lab_assistant') return <StaffWorkspace {...props} />
-  if (currentUser.role === 'hod') return <HodWorkspace {...props} />
+  if (currentUser.role === 'super_admin') return <HodWorkspace {...props} canMaintainRecords />
+  if (currentUser.role === 'hod') return <HodWorkspace {...props} canMaintainRecords={false} />
   return <ErrorState title="Workflow unavailable" description="This role has no configured request workflow screen." />
 }
 
@@ -217,7 +219,7 @@ function StaffWorkspace({ data, reload, userId }: ViewProps) {
   return <div className="space-y-6"><PageHeader title="Staff leave" description="Submit and track personal leave through the HOD approval workflow." actions={<div className="flex gap-2"><Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button><Button onClick={() => setOpen(true)}><Plus className="size-4" /> New leave</Button></div>} />{feedback && <Feedback value={feedback} />}<RequestTable data={data} requests={data.requests.filter((row) => row.requester_id === userId)} title="My leave history" onPreview={setPreview} /><RequestDialog isOpen={open} form={form} setForm={setForm} file={file} setFile={setFile} saving={saving} staffOnly projects={[]} competitions={[]} onClose={() => setOpen(false)} onSubmit={submit} />{preview && <SecurePreview key={preview.id} attachment={preview} onClose={() => setPreview(null)} />}</div>
 }
 
-function HodWorkspace({ data, reload, userId }: ViewProps) {
+function HodWorkspace({ data, reload, userId, canMaintainRecords }: ViewProps & { canMaintainRecords: boolean }) {
   const [decision, setDecision] = useState<Decision | null>(null)
   const [comments, setComments] = useState('')
   const [saving, setSaving] = useState(false)
@@ -267,12 +269,12 @@ function HodWorkspace({ data, reload, userId }: ViewProps) {
     setCompetitionOpen(true)
   }
   return <div className="space-y-6">
-    <PageHeader title="Department requests, projects and competitions" description="Department-scoped approval queues, Faculty Guide projects, competition records, and OD finalization." actions={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button><Button onClick={() => { setProject(emptyProject('')); setProjectOpen(true) }}><Plus className="size-4" /> Project</Button><Button variant="secondary" onClick={() => { setCompetition(emptyCompetition()); setCompetitionOpen(true) }}><Plus className="size-4" /> Competition</Button></div>} />
+    <PageHeader title="Department requests, projects and competitions" description={canMaintainRecords ? 'Super Admin approval queues, Faculty Guide projects, competition records, and OD finalization.' : 'HOD approval queues for leave, outpass, OD, and department workflow monitoring.'} actions={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>{canMaintainRecords && <Button onClick={() => { setProject(emptyProject('')); setProjectOpen(true) }}><Plus className="size-4" /> Project</Button>}{canMaintainRecords && <Button variant="secondary" onClick={() => { setCompetition(emptyCompetition()); setCompetitionOpen(true) }}><Plus className="size-4" /> Competition</Button>}</div>} />
     {feedback && <Feedback value={feedback} />}
     <HodReviewQueue data={data} requests={queue} onDecision={setDecision} onPreview={setPreview} />
     <RequestTable data={data} requests={data.requests} title="Department request history" onPreview={setPreview} />
-    <ProjectsTable data={data} userId={userId} onEdit={editProject} />
-    <CompetitionsTable data={data} onEdit={editCompetition} />
+    <ProjectsTable data={data} userId={userId} onEdit={canMaintainRecords ? editProject : undefined} />
+    <CompetitionsTable data={data} onEdit={canMaintainRecords ? editCompetition : undefined} />
     <ProjectDialog isOpen={projectOpen} project={project} setProject={setProject} data={data} facultyId="" saving={saving} onClose={() => setProjectOpen(false)} onSubmit={saveProject} />
     <CompetitionDialog isOpen={competitionOpen} competition={competition} setCompetition={setCompetition} data={data} saving={saving} onClose={() => setCompetitionOpen(false)} onSubmit={saveCompetition} />
     <DecisionDialog decision={decision} comments={comments} setComments={setComments} saving={saving} onClose={() => setDecision(null)} onSubmit={review} />
@@ -360,7 +362,7 @@ function ProjectDialog({ isOpen, project, setProject, data, facultyId, saving, o
   const activeStudentIds = new Set(data.enrollments.filter((row) => row.status === 'active').map((row) => row.student_id))
   const students = data.profiles.filter((row) => row.role === 'student' && row.status === 'active' && activeStudentIds.has(row.id))
   const guideIds = new Set(data.assignments.filter((row) => row.is_active && row.assignment_type === 'faculty_guide').map((row) => row.faculty_id))
-  const guides = data.profiles.filter((row) => row.role === 'faculty' && row.status === 'active' && guideIds.has(row.id))
+  const guides = data.profiles.filter((row) => isTeachingStaff(row.role) && row.status === 'active' && guideIds.has(row.id))
   const toggle = (id: string) => setProject({ ...project, memberIds: project.memberIds.includes(id) ? project.memberIds.filter((value) => value !== id) : [...project.memberIds, id] })
   return <Modal isOpen={isOpen} title={project.id ? 'Edit project' : 'Create project'} onClose={onClose}><div className="space-y-4"><label className="block text-sm font-semibold">Project name<Input className="mt-1" value={project.name} onChange={(event) => setProject({ ...project, name: event.target.value })} /></label><label className="block text-sm font-semibold">Description<Textarea className="mt-1" value={project.description} onChange={(event) => setProject({ ...project, description: event.target.value })} /></label>{!facultyId && <label className="block text-sm font-semibold">Faculty Guide<Select className="mt-1" value={project.facultyGuideId} onChange={(event) => setProject({ ...project, facultyGuideId: event.target.value })}><option value="">Select active Faculty Guide</option>{guides.map((guide) => <option key={guide.id} value={guide.id}>{guide.full_name}</option>)}</Select></label>}<label className="block text-sm font-semibold">Status<Select className="mt-1" value={project.status} onChange={(event) => setProject({ ...project, status: event.target.value })}>{projectStatuses.map((status) => <option key={status}>{status}</option>)}</Select></label><div><p className="text-sm font-semibold">Active enrolled members</p><div className="mt-2 max-h-48 space-y-2 overflow-y-auto rounded-lg border border-border p-3">{students.map((student) => <label key={student.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={project.memberIds.includes(student.id)} onChange={() => toggle(student.id)} /> {student.full_name} · {student.employee_or_register_number ?? '—'}</label>)}{!students.length && <p className="text-sm text-muted">No authorized active students are visible.</p>}</div></div><div className="flex justify-end gap-3"><Button variant="secondary" disabled={saving} onClick={onClose}>Cancel</Button><Button disabled={saving} onClick={() => void onSubmit()}>{saving ? 'Saving…' : 'Save project'}</Button></div></div></Modal>
 }

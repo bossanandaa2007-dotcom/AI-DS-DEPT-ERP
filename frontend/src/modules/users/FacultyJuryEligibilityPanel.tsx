@@ -19,7 +19,7 @@ export function FacultyJuryEligibilityPanel() {
   const [savingId, setSavingId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
 
-  if (!currentUser || !['super_admin', 'hod'].includes(currentUser.role)) return null
+  if (!currentUser || currentUser.role !== 'super_admin') return null
   if (resource.isLoading) return <LoadingState label="Loading Faculty Jury eligibility…" />
   if (resource.error) return <ErrorState title="Unable to load Jury eligibility" description={resource.error} />
   const data = resource.data

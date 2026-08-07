@@ -1,3 +1,4 @@
+import { toIsoDate } from '@/lib/date-time'
 import { supabase } from '@/lib/supabase'
 import type { Database } from '@/types/database.types'
 
@@ -18,6 +19,27 @@ const fail = (error: { message: string; code?: string } | null, fallback: string
   throw new Error(error.message || fallback)
 }
 const datesValid = (starts: string | null | undefined, ends: string | null | undefined) => !starts || !ends || ends > starts
+
+/**
+ * The deployed database carries columns that `database.types.ts` predates — `effective_from` and
+ * `effective_to` on faculty_assignments and timetable_entries, plus academic-context columns on
+ * timetable_entries. They are NOT NULL with no default, so an insert built only from the generated
+ * Insert type fails with `23502 null value in column "effective_from" ...`. Every one of them is
+ * derivable from the section, so they are filled in here rather than at each call site.
+ *
+ * Remove this once the schema and the generated types are reconciled.
+ */
+async function sectionValidity(sectionId: string) {
+  const [sections, semesters] = await Promise.all([list('sections'), list('semesters')])
+  const section = sections.find((row) => row.id === sectionId)
+  if (!section) throw new Error('Section was not found.')
+  const semester = semesters.find((row) => row.id === section.semester_id)
+  return {
+    section,
+    effective_from: semester?.starts_on ?? toIsoDate(),
+    effective_to: semester?.ends_on ?? null,
+  }
+}
 
 async function list<Name extends keyof Database['public']['Tables']>(table: Name): Promise<Row<Name>[]> {
   const { data, error } = await client().from(table).select('*').order('created_at' as never)
@@ -121,7 +143,14 @@ export const academicRepository = {
     if (faculty.department_id !== section.department_id) throw new Error('Faculty and section must belong to the same department.')
     if (subject && (subject.semester_id !== section.semester_id || subject.department_id !== section.department_id)) throw new Error('Subject and section must share the same semester and department.')
     if (assignments.some((item) => item.is_active && item.faculty_id === value.faculty_id && item.subject_id === (value.subject_id ?? null) && item.section_id === value.section_id && item.assignment_type === value.assignment_type)) throw new Error('This active Faculty assignment already exists.')
-    return create('faculty_assignments', value)
+    const { effective_from } = await sectionValidity(value.section_id)
+    // `faculty_assignments_subject_hours_check` on the deployed table wants positive weekly hours
+    // for a subject allocation and exactly zero for class_teacher and faculty_guide rows, so it is
+    // always sent explicitly rather than left to the column default.
+    // `subjects.weekly_hours` is another column the generated types predate.
+    const declaredHours = Number((subject as { weekly_hours?: number | null } | null)?.weekly_hours ?? 0)
+    const weekly_hours = subject ? Math.max(1, Math.round(declaredHours || Number(subject.credits ?? 1))) : 0
+    return create('faculty_assignments', { effective_from, weekly_hours, ...value } as Insert<'faculty_assignments'>)
   },
   async updateFacultyAssignment(id: string, value: Update<'faculty_assignments'>) {
     const [assignments, profiles, sections, subjects] = await Promise.all([list('faculty_assignments'), list('profiles'), list('sections'), list('subjects')])
@@ -180,7 +209,12 @@ export const academicRepository = {
     if (entries.some((entry) => entry.section_id === value.section_id && overlaps(entry))) throw new Error('This section already has an overlapping timetable entry.')
     if (value.faculty_id && entries.some((entry) => entry.faculty_id === value.faculty_id && overlaps(entry))) throw new Error('This Faculty member already has an overlapping timetable entry.')
   },
-  async createTimetableEntry(value: Insert<'timetable_entries'>) { await this.validateTimetableConflicts({ ...value, faculty_id: value.faculty_id ?? null }); return create('timetable_entries', value) },
+  async createTimetableEntry(value: Insert<'timetable_entries'>) {
+    await this.validateTimetableConflicts({ ...value, faculty_id: value.faculty_id ?? null })
+    const { section, effective_from, effective_to } = await sectionValidity(value.section_id)
+    const context = { academic_year_id: section.academic_year_id, department_id: section.department_id, semester_id: section.semester_id, effective_from, effective_to, is_active: true }
+    return create('timetable_entries', { ...context, ...value } as Insert<'timetable_entries'>)
+  },
   async updateTimetableEntry(id: string, value: Update<'timetable_entries'>) { const existing = (await list('timetable_entries')).find((entry) => entry.id === id); if (!existing) throw new Error('Timetable entry was not found.'); const candidate = { ...existing, ...value }; await this.validateTimetableConflicts(candidate, id); return update('timetable_entries', id, value) }, deleteTimetableEntry: (id: string) => remove('timetable_entries', id),
   async loadAcademicData(): Promise<AcademicData> { const [departments, academicYears, semesters, sections, subjects, profiles, enrollments, assignments, projects, timetable] = await Promise.all([list('departments'), list('academic_years'), list('semesters'), list('sections'), list('subjects'), list('profiles'), list('enrollments'), list('faculty_assignments'), list('projects'), list('timetable_entries')]); return { departments, academicYears, semesters, sections, subjects, profiles, enrollments, assignments, projects, timetable } },
 }

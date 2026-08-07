@@ -12,3 +12,18 @@ backups/
 tmp/
 supabase/.temp/
 .vite/
+
+# Server-side operational secrets (service_role). Never commit.
+supabase/.env.ops
+supabase/pilot/out/
+
+# Regenerated from the source documents by supabase/pilot/build-dataset.py.
+# Holds the full student roster (names + register numbers), so it is not committed.
+supabase/pilot/pilot-data.json
+
+# Source documents for the pilot load: they contain the full student roster.
+supabase/pilot/source-documents/
+__pycache__/
+
+# Internal status notes: kept in the working folder and in handover zips, not in git.
+docs/PROJECT_STATUS_AND_WORKFLOW_AUDIT.md

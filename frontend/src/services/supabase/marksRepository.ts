@@ -29,6 +29,8 @@ export interface AssessmentInput {
   assessmentType: AssessmentType
   subjectId: string
   sectionId: string
+  /** Faculty who handles this subject and section, and who will enter and finalize the marks. */
+  facultyId: string
   maximumMarks: number
   assessmentDate: string
 }
@@ -88,6 +90,30 @@ async function verifyAssignment(userId: string, sectionId: string, subjectId: st
   }
 }
 
+/** Assessment creation belongs to the Super Admin; Faculty only enter and finalize marks. */
+async function verifyAssessmentManager() {
+  const user = await currentUser()
+  const { data, error } = await client().from('profiles').select('role').eq('id', user.id).maybeSingle()
+  fail(error, 'Unable to verify your role.')
+  if (data?.role !== 'super_admin') throw new Error('Only the Super Admin can create or edit assessments.')
+}
+
+/** The assigned Faculty owns mark entry and is the only role the finalize RPC accepts. */
+async function verifyAssignedFaculty(facultyId: string, sectionId: string, subjectId: string) {
+  const { data, error } = await client().from('profiles').select('role,status').eq('id', facultyId).maybeSingle()
+  fail(error, 'Unable to load the assigned Faculty profile.')
+  if (!data || data.role !== 'faculty' || data.status !== 'active') throw new Error('Select an active Faculty member for this assessment.')
+  const assignment = await client()
+    .from('faculty_assignments')
+    .select('id')
+    .eq('faculty_id', facultyId)
+    .eq('section_id', sectionId)
+    .eq('subject_id', subjectId)
+    .eq('is_active', true)
+  fail(assignment.error, 'Unable to verify the Faculty assignment.')
+  if (!(assignment.data ?? []).length) throw new Error('The selected Faculty member does not hold an active assignment for this subject and section.')
+}
+
 export const marksRepository = {
   async loadMarksData(): Promise<MarksData> {
     const [assessments, marks, corrections, profiles, enrollments, assignments, subjects, sections] = await Promise.all([
@@ -104,12 +130,13 @@ export const marksRepository = {
   },
 
   async saveAssessment(input: AssessmentInput): Promise<AssessmentRow> {
-    const user = await currentUser()
     const title = input.title.trim()
     if (!title) throw new Error('Enter an assessment title.')
     if (!input.subjectId || !input.sectionId || !input.assessmentDate) throw new Error('Select a subject, section, and assessment date.')
+    if (!input.facultyId) throw new Error('Select the Faculty member who handles this subject and section.')
     if (!Number.isFinite(input.maximumMarks) || input.maximumMarks <= 0) throw new Error('Maximum marks must be greater than zero.')
-    await verifyAssignment(user.id, input.sectionId, input.subjectId)
+    await verifyAssessmentManager()
+    await verifyAssignedFaculty(input.facultyId, input.sectionId, input.subjectId)
 
     const duplicateQuery = client()
       .from('assessments')
@@ -125,8 +152,7 @@ export const marksRepository = {
     if ((duplicates ?? []).length) throw new Error('An assessment with this subject, section, title, and date already exists.')
 
     if (input.id) {
-      const existing = await assessmentForWrite(input.id)
-      if (existing.faculty_id !== user.id) throw new Error('Only the owning Faculty member can edit this assessment.')
+      await assessmentForWrite(input.id)
       const { data: marks, error: marksError } = await client().from('marks').select('obtained_marks').eq('assessment_id', input.id).eq('absent', false)
       fail(marksError, 'Unable to validate existing marks.')
       const highest = Math.max(0, ...(marks ?? []).map((row) => Number(row.obtained_marks ?? 0)))
@@ -136,6 +162,7 @@ export const marksRepository = {
         assessment_type: input.assessmentType,
         subject_id: input.subjectId,
         section_id: input.sectionId,
+        faculty_id: input.facultyId,
         maximum_marks: input.maximumMarks,
         assessment_date: input.assessmentDate,
       }).eq('id', input.id).select().single()
@@ -145,7 +172,7 @@ export const marksRepository = {
     }
 
     const { data, error } = await client().from('assessments').insert({
-      faculty_id: user.id,
+      faculty_id: input.facultyId,
       title,
       assessment_type: input.assessmentType,
       subject_id: input.subjectId,

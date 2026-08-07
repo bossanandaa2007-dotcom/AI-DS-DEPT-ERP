@@ -1,6 +1,9 @@
 {
   "name": "ai-ds-dept-erp-workspace",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",

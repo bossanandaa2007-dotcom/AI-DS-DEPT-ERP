@@ -28,7 +28,7 @@ function UserManagementContent() {
   const { currentUser } = useAuth()
   const canManage = currentUser?.role === USER_ROLES.superAdmin
   const load = useCallback(() => academicRepository.loadAcademicData(), [])
-  const resource = useAsyncResource(load)
+  const resource = useAsyncResource(load, 'academicData')
   const [query, setQuery] = useState('')
   const [role, setRole] = useState('all')
   const [editing, setEditing] = useState<Profile | null>(null)
@@ -107,7 +107,7 @@ function UserManagementContent() {
         <label className="block text-sm font-semibold">Name<Input className="mt-1" value={name} onChange={(event) => setName(event.target.value)} /></label>
         <label className="block text-sm font-semibold">Department<Select className="mt-1" value={departmentId} onChange={(event) => setDepartmentId(event.target.value)}><option value="">No department</option>{data.departments.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></label>
         <label className="block text-sm font-semibold">Status<Select className="mt-1" value={status} onChange={(event) => setStatus(event.target.value as typeof status)}>{statuses.map((item) => <option key={item} value={item}>{item}</option>)}</Select></label>
-        {message && <p className="text-sm text-error">{message}</p>}
+        {message && <p role="alert" className="text-sm text-error">{message}</p>}
         <div className="flex justify-end gap-3"><Button variant="secondary" disabled={saving} onClick={() => setEditing(null)}>Cancel</Button><Button disabled={saving} onClick={() => void save()}>{saving ? 'Saving...' : 'Save profile'}</Button></div>
       </div>}
     </Modal>

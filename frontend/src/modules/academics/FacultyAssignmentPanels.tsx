@@ -87,7 +87,7 @@ export function AllocationDirectory({ data, reload, canManage = true }: PanelPro
       </div>
       {canManage && <Button onClick={openCreate}><Plus className="size-4" /> New allocation</Button>}
     </div>
-    {notice && <p className="mt-3 text-sm text-success">{notice}</p>}
+    {notice && <p role="status" className="mt-3 text-sm text-success">{notice}</p>}
     <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
       <Filter value={statusFilter} setValue={(value) => setStatusFilter(value as typeof statusFilter)} label="Active only" rows={[{ id: 'inactive', label: 'Deactivated only' }, { id: 'all', label: 'Active and deactivated' }]} allValue="active" />
       <Filter value={facultyFilter} setValue={setFacultyFilter} label="All Faculty" rows={activeFaculty.map((row) => ({ id: row.id, label: row.full_name }))} />
@@ -116,7 +116,7 @@ export function AllocationDirectory({ data, reload, canManage = true }: PanelPro
         {needsSubject(draft.type) && <Field label="Subject"><Select value={draft.subjectId} onChange={(event) => setDraft({ ...draft, subjectId: event.target.value })}><option value="">Select subject</option>{data.subjects.filter((row) => row.semester_id === section(draft.sectionId)?.semester_id).map((row) => <option key={row.id} value={row.id}>{row.code} · {row.name}</option>)}</Select></Field>}
         {draft.type === 'class_teacher' && <p className="text-xs text-warning">A section may have only one active Class Teacher. Use the Class Teacher control on the section board to replace the current one safely.</p>}
       </div>
-      {message && <p className="mt-3 text-sm text-error">{message}</p>}
+      {message && <p role="alert" className="mt-3 text-sm text-error">{message}</p>}
       <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" disabled={saving} onClick={close}>Cancel</Button><Button disabled={saving} onClick={() => void save()}>{saving ? 'Saving…' : editing ? 'Save allocation' : 'Create allocation'}</Button></div>
     </Modal>
 
@@ -139,7 +139,7 @@ export function ProjectGuidePanel({ data, reload, canManage = true }: PanelProps
   return <Card>
     <h2 className="font-bold text-text">Project Faculty Guides</h2>
     <p className="mt-1 text-sm text-muted">Guides recorded against each project, separate from section responsibilities.</p>
-    {message && <p className={`mt-3 text-sm ${message.includes('assigned') || message.includes('removed') ? 'text-success' : 'text-error'}`}>{message}</p>}
+    {message && <p role={message.includes('assigned') || message.includes('removed') ? 'status' : 'alert'} className={`mt-3 text-sm ${message.includes('assigned') || message.includes('removed') ? 'text-success' : 'text-error'}`}>{message}</p>}
     {canManage && <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
       <Filter value={projectId} setValue={(value) => { setProjectId(value); setFacultyId(data.projects.find((row) => row.id === value)?.faculty_guide_id ?? '') }} label="Select project" rows={data.projects.map((row) => ({ id: row.id, label: row.name }))} />
       <Filter value={facultyId} setValue={setFacultyId} label="No guide / remove guide" rows={activeFaculty.map((row) => ({ id: row.id, label: row.full_name }))} />

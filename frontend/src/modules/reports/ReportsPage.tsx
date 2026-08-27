@@ -23,7 +23,7 @@ const exportRows = (name: string, rows: Array<{ reference: string; metric: strin
 
 export function ReportsPage() {
   const load = useCallback(() => reportingRepository.load(), [])
-  const resource = useAsyncResource(load)
+  const resource = useAsyncResource(load, 'reportingData')
   const [report, setReport] = useState<ReportKind>('attendance')
   const [filters, setFilters] = useState<ReportFilters>(emptyFilters)
   if (resource.isLoading) return <LoadingState label="Loading live reports…" />

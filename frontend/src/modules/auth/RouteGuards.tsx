@@ -28,7 +28,7 @@ export function ProtectedRoleRoute({ allowedRoles }: PropsWithChildren<{ allowed
 /** Jury is an active Faculty capability, checked from the database before rendering its route. */
 export function JuryEligibleRoute() {
   const load = useCallback(() => documentReviewRepository.isCurrentUserJuryEligible(), [])
-  const eligibility = useAsyncResource(load)
+  const eligibility = useAsyncResource(load, 'juryEligibility')
   if (eligibility.isLoading) return <LoadingState label="Checking Jury eligibility…" />
   if (eligibility.error) return <ErrorState title="Jury access unavailable" description={eligibility.error} />
   if (!eligibility.data) return <Navigate replace to={ROUTE_PATHS.unauthorized} />

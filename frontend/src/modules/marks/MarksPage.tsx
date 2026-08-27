@@ -56,12 +56,12 @@ interface AssessmentOption extends AssessmentContext {
 export function MarksPage() {
   const { currentUser } = useAuth()
   const load = useCallback(() => marksRepository.loadMarksData(), [])
-  const resource = useAsyncResource(load)
+  const resource = useAsyncResource(load, 'marksData')
   if (resource.isLoading) return <LoadingState label="Loading marks…" />
   if (resource.error) return <div className="space-y-4"><ErrorState title="Unable to load marks" description={resource.error} /><Button variant="secondary" onClick={() => void resource.reload()}><RefreshCw className="size-4" /> Retry</Button></div>
   if (!currentUser || !resource.data) return null
   const props = { data: resource.data, reload: resource.reload, userId: currentUser.id }
-  if (currentUser.role === 'student') return <StudentMarks {...props} />
+  if (currentUser.role === 'student') return <StudentMarks {...props} studentName={currentUser.name} />
   if (currentUser.role === 'faculty') return <FacultyMarks {...props} />
   if (currentUser.role === 'super_admin') return <AssessmentAdminMarks {...props} canManage />
   if (currentUser.role === 'hod') return <AssessmentAdminMarks {...props} canManage={false} />
@@ -197,7 +197,7 @@ function MarksEntryCard({ assessment, data, students, marks, drafts, saving, can
   </Card>
 }
 
-function StudentMarks({ data, reload, userId }: ViewProps) {
+function StudentMarks({ data, reload, userId, studentName }: ViewProps & { studentName: string }) {
   const enrollmentSectionIds = new Set(data.enrollments.filter((row) => row.student_id === userId && row.status === 'active').map((row) => row.section_id))
   const assessments = data.assessments.filter((row) => enrollmentSectionIds.has(row.section_id) && row.status === 'finalized')
   const [target, setTarget] = useState<MarkRow | null>(null)
@@ -232,7 +232,7 @@ function StudentMarks({ data, reload, userId }: ViewProps) {
   }
 
   return <div className="space-y-6">
-    <PageHeader title="My marks" description="Finalized personal assessment marks and correction history from live academic records." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />
+    <PageHeader title={`${studentName} marks`} description="Finalized personal assessment marks and correction history from live academic records." actions={<Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>} />
     {feedback && <Feedback value={feedback} />}
     <div className="grid gap-4 sm:grid-cols-2"><Summary label="Finalized assessments" value={assessments.length} large /><Summary label="Average scored percentage" value={average === null ? '—' : `${average}%`} large /></div>
     <Card><h2 className="font-bold text-text">Personal assessment marks</h2><div className="mt-4"><DataTable rows={scored.map((row) => ({ id: row.assessment.id, ...row }))} empty={<EmptyState title="No finalized marks available" />} columns={[
@@ -241,7 +241,7 @@ function StudentMarks({ data, reload, userId }: ViewProps) {
       { header: 'Percentage', render: (row) => row.mark && !row.mark.absent ? `${Math.round((Number(row.mark.obtained_marks) / row.assessment.maximum_marks) * 100)}%` : '—' },
       { header: 'Correction', render: (row) => !row.mark ? <span className="text-muted">Unavailable</span> : pendingMarkIds.has(row.mark.id) ? <Badge tone="warning">Pending</Badge> : <Button className="min-h-8 px-3" variant="secondary" onClick={() => openCorrection(row.mark!)}>Request</Button> },
     ]} /></div></Card>
-    <CorrectionHistory data={data} corrections={data.corrections.filter((row) => row.student_id === userId)} />
+    <div className="hidden md:block"><CorrectionHistory data={data} corrections={data.corrections.filter((row) => row.student_id === userId)} /></div>
     <Modal isOpen={Boolean(target)} title="Request mark correction" onClose={() => setTarget(null)}>
       <label className="block text-sm font-semibold">Requested state<Select className="mt-1" value={absent ? 'absent' : 'mark'} onChange={(event) => setAbsent(event.target.value === 'absent')}><option value="mark">Corrected mark</option><option value="absent">Absent</option></Select></label>
       {!absent && <label className="mt-4 block text-sm font-semibold">Corrected mark<Input className="mt-1" type="number" min="0" step="0.01" value={requested} onChange={(event) => setRequested(event.target.value)} /></label>}

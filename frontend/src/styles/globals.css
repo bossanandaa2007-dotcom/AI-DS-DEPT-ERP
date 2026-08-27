@@ -15,6 +15,10 @@
   --color-warning: 180 117 18;
   --color-error: 190 47 47;
   --color-information: 38 104 184;
+  /* Lightened cast of --color-secondary (the AI&DS teal) — reads on the dark login scene where
+     the base teal would sink into the navy. Shared by the neural layer, the role-card glow, and
+     the "& Data Science" shimmer so the scene is one palette, not per-element choices. */
+  --scene-accent: 127 211 223;
   --radius: 0.5rem;
   --sidebar-width: 17rem;
   --header-height: 3.75rem;
@@ -123,6 +127,37 @@ a:hover { color: rgb(var(--color-secondary)); }
   to { transform: translateX(300%); }
 }
 
+/* Login scene: the campus photo runs a slow Ken Burns loop like ambient footage behind every
+   phase of the intro → welcome → choice → form sequence. */
+@keyframes scene-ken-burns {
+  0%   { transform: scale(1.04) translate3d(0, 0, 0); }
+  50%  { transform: scale(1.12) translate3d(-1.6%, -1.2%, 0); }
+  100% { transform: scale(1.04) translate3d(0, 0, 0); }
+}
+
+@keyframes scene-rise {
+  from { opacity: 0; transform: translate3d(0, 1.4rem, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes scene-fill-welcome {
+  from { transform: scaleX(0.06); }
+  to   { transform: scaleX(0.58); }
+}
+
+/* One slow breath every 3s on the role-card icon badges — a status-indicator pulse, not an alert. */
+@keyframes scene-badge-pulse {
+  0%, 100% { box-shadow: 0 8px 20px -8px rgb(var(--scene-accent) / 0.42), 0 0 0 0 rgb(var(--scene-accent) / 0); }
+  50%      { box-shadow: 0 10px 26px -6px rgb(var(--scene-accent) / 0.62), 0 0 0 5px rgb(var(--scene-accent) / 0.1); }
+}
+
+/* A single highlight sweep across "& Data Science" as the welcome layer arrives, then it holds
+   the flat accent colour — plays once, never loops. */
+@keyframes scene-shimmer {
+  from { background-position: 220% 0; }
+  to   { background-position: -20% 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -130,6 +165,8 @@ a:hover { color: rgb(var(--color-secondary)); }
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+  /* No drifting photo when motion is suppressed — hold a static, slightly-cropped frame. */
+  .scene-ken-burns { animation: none !important; transform: scale(1.04); }
 }
 
 @layer components {
@@ -164,3 +201,94 @@ a:hover { color: rgb(var(--color-secondary)); }
     animation: top-progress-sweep 900ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
   }
 }
+
+/* --- Login scene --------------------------------------------------------------------------
+   Deliberately unlayered: the phase-state classes below are composed dynamically in the
+   component (`scene-layer--${state}`), so Tailwind's class scanner never sees the literal
+   names and would tree-shake them out of an `@layer components` block. */
+.scene-ken-burns { animation: scene-ken-burns 34s ease-in-out infinite; will-change: transform; }
+
+/* Each phase is one absolutely-stacked layer. Swapping which layer is `--current` crossfades the
+   outgoing layer forward past the camera while the incoming layer flies in from smaller than full
+   size — so it reads as moving through the scene, not sliding. Opacity + transform only: both are
+   GPU-composited, so the transition never repaints the viewport. */
+.scene-layer {
+  transition:
+    opacity 720ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 720ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+.scene-layer--future  { opacity: 0; transform: scale(0.92); pointer-events: none; }
+.scene-layer--current { opacity: 1; transform: scale(1); }
+.scene-layer--past    { opacity: 0; transform: scale(1.14); pointer-events: none; }
+
+.scene-rise { animation: scene-rise 620ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* Timed-sequence progress hairline. Rendered only while the timers are running (not under
+   reduced motion, where nothing auto-advances). */
+.scene-progress {
+  position: absolute; inset-block-start: 0; inset-inline-start: 0; z-index: 30;
+  height: 2px; width: 100%;
+  transform-origin: left center; transform: scaleX(0.05);
+  background: linear-gradient(90deg, rgb(var(--color-information)), #9ec1ff);
+}
+.scene-progress[data-phase='welcome'] { transform: scaleX(0.58); animation: scene-fill-welcome 2800ms linear forwards; }
+.scene-progress[data-phase='choice']  { transform: scaleX(1); transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1); }
+.scene-progress[data-phase='form']    { transform: scaleX(1); opacity: 0; transition: opacity 480ms ease; }
+
+.scene-badge-pulse { animation: scene-badge-pulse 3s ease-in-out infinite; }
+
+.scene-shimmer {
+  background-image: linear-gradient(100deg, rgb(var(--scene-accent)) 0%, rgb(var(--scene-accent)) 42%, #eafcff 50%, rgb(var(--scene-accent)) 58%, rgb(var(--scene-accent)) 100%);
+  background-size: 220% 100%;
+  background-position: 220% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: scene-shimmer 1150ms cubic-bezier(0.16, 1, 0.3, 1) 820ms both;
+}
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .scene-shimmer { color: rgb(var(--scene-accent)); }
+}
+
+/* --- 2D welcome robot -------------------------------------------------------------------- */
+@keyframes robot-float {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50%      { transform: translate3d(0, -6px, 0); }
+}
+@keyframes robot-peek-bob {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-4deg); }
+  50%      { transform: translate3d(0, -4px, 0) rotate(-1.5deg); }
+}
+@keyframes robot-peek-in {
+  from { opacity: 0; transform: translate3d(-22px, -18px, 0) scale(0.86); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+@keyframes robot-center-in {
+  from { opacity: 0; transform: scale(0.6); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes robot-wave {
+  0%   { transform: rotate(10deg); }
+  10%  { transform: rotate(-12deg); }
+  24%  { transform: rotate(13deg); }
+  38%  { transform: rotate(-9deg); }
+  52%  { transform: rotate(13deg); }
+  66%  { transform: rotate(-6deg); }
+  80%  { transform: rotate(9deg); }
+  100% { transform: rotate(2deg); }
+}
+@keyframes robot-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  96%           { transform: scaleY(0.12); }
+}
+
+.robot-float       { animation: robot-float 3.4s ease-in-out infinite; }
+.robot-center-in   { animation: robot-center-in 520ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.robot-peek-in     { animation: robot-peek-in 700ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.robot-peek        { animation: robot-peek-bob 3.6s ease-in-out infinite; }
+
+/* Only the centre pose animates an arm — pivot at the lower-left of its own bounding box. */
+.robot-wave-arm            { transform-box: fill-box; transform-origin: 14% 92%; }
+.robot-wave-arm--waving    { animation: robot-wave 2400ms cubic-bezier(0.36, 0.9, 0.5, 1) 400ms both; }
+.robot-eyes                { transform-box: fill-box; transform-origin: center; animation: robot-blink 5.6s ease-in-out infinite; }

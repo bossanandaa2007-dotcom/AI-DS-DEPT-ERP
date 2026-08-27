@@ -67,7 +67,7 @@ interface RequestFormState {
 export function RequestsPage() {
   const { currentUser } = useAuth()
   const load = useCallback(() => requestWorkflowRepository.loadData(), [])
-  const resource = useAsyncResource(load)
+  const resource = useAsyncResource(load, 'requestsData')
   if (resource.isLoading) return <LoadingState label="Loading requests, projects, and OD workflows…" />
   if (resource.error) return <div className="space-y-4"><ErrorState title="Unable to load request workflows" description={resource.error} /><Button variant="secondary" onClick={() => void resource.reload()}><RefreshCw className="size-4" /> Retry</Button></div>
   if (!currentUser || !resource.data) return null
@@ -126,7 +126,6 @@ function StudentWorkspace({ data, reload, userId }: ViewProps) {
     <PageHeader title="Leave, gate pass, projects and OD" description="Personal requests, secure document verification, projects, competitions, and complete OD tracking." actions={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button><Button onClick={() => setRequestOpen(true)}><Plus className="size-4" /> New request</Button></div>} />
     {feedback && <Feedback value={feedback} />}
     <RequestTable data={data} requests={requests} title="My request history" onPreview={setPreview} action={(request) => <StudentRequestActions request={request} data={data} setPass={setPass} setCertificateRequest={setCertificateRequest} setPreview={setPreview} />} />
-    <ProjectsTable data={data} userId={userId} />
     <CompetitionsTable data={data} />
     <RequestDialog isOpen={requestOpen} form={form} setForm={setForm} file={file} setFile={setFile} saving={saving} projects={data.projects} competitions={data.competitions} onClose={() => setRequestOpen(false)} onSubmit={submit} />
     <CertificateDialog request={certificateRequest} file={certificate} setFile={setCertificate} saving={saving} onClose={() => setCertificateRequest(null)} onSubmit={uploadCertificate} />

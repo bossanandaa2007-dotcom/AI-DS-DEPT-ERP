@@ -7,8 +7,3 @@ export type FacultyResponsibility =
   | 'lab_faculty'
 
 export type UserStatus = 'active' | 'inactive' | 'suspended'
-
-export interface AuthSession {
-  accessToken: string
-  user: import('@/types/user.types').AppUser
-}

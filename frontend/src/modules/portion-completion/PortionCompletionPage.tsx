@@ -18,7 +18,7 @@ import { departmentOperationsRepository } from '@/services/supabase/departmentOp
 export function PortionCompletionPage() {
   const { currentUser } = useAuth()
   const load = useCallback(() => departmentOperationsRepository.load(), [])
-  const resource = useAsyncResource(load)
+  const resource = useAsyncResource(load, 'departmentOperations')
   const [timetableId, setTimetableId] = useState('')
   const [query, setQuery] = useState('')
   const [form, setForm] = useState({ unit: 'Unit 1', plannedTopic: '', completedTopic: '', completionPercentage: 0, nextTopic: '' })

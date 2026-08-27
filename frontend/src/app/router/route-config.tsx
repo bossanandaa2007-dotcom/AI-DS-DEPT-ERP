@@ -1,24 +1,28 @@
 import { ArrowLeft, CircleAlert, ShieldAlert } from 'lucide-react'
+import { lazy } from 'react'
 import { Link, type RouteObject } from 'react-router-dom'
 
 import { ROUTE_PATHS } from '@/app/router/route-paths'
 import { USER_ROLES } from '@/constants/roles'
 import { AppShell } from '@/layouts/AppShell'
-import { RoleDashboardPage } from '@/modules/dashboard/RoleDashboardPage'
 import { LoginPage } from '@/modules/auth/LoginPage'
 import { HomeRedirect, JuryEligibleRoute, ProtectedRoleRoute } from '@/modules/auth/RouteGuards'
-import { AcademicSetupPage } from '@/modules/academics/AcademicSetupPage'
-import { SubjectAllocationPage } from '@/modules/academics/SubjectAllocationPage'
-import { TimetablePage } from '@/modules/timetable/TimetablePage'
-import { UserManagementPage } from '@/modules/users/UserManagementPage'
-import { AttendancePage } from '@/modules/attendance/AttendancePage'
-import { MarksPage } from '@/modules/marks/MarksPage'
-import { RequestsPage } from '@/modules/requests/RequestsPage'
-import { CommunicationPage } from '@/modules/communication/CommunicationPage'
-import { PortionCompletionPage } from '@/modules/portion-completion/PortionCompletionPage'
-import { ReportsPage } from '@/modules/reports/ReportsPage'
-import { AuditPage } from '@/modules/audit/AuditPage'
-import { DocumentReviewQueuePage, ReviewerAssignmentPage, StudentDocumentStatusPage } from '@/modules/document-reviews/DocumentReviewsPage'
+
+const RoleDashboardPage = lazy(() => import('@/modules/dashboard/RoleDashboardPage').then((m) => ({ default: m.RoleDashboardPage })))
+const AcademicSetupPage = lazy(() => import('@/modules/academics/AcademicSetupPage').then((m) => ({ default: m.AcademicSetupPage })))
+const SubjectAllocationPage = lazy(() => import('@/modules/academics/SubjectAllocationPage').then((m) => ({ default: m.SubjectAllocationPage })))
+const TimetablePage = lazy(() => import('@/modules/timetable/TimetablePage').then((m) => ({ default: m.TimetablePage })))
+const UserManagementPage = lazy(() => import('@/modules/users/UserManagementPage').then((m) => ({ default: m.UserManagementPage })))
+const AttendancePage = lazy(() => import('@/modules/attendance/AttendancePage').then((m) => ({ default: m.AttendancePage })))
+const MarksPage = lazy(() => import('@/modules/marks/MarksPage').then((m) => ({ default: m.MarksPage })))
+const RequestsPage = lazy(() => import('@/modules/requests/RequestsPage').then((m) => ({ default: m.RequestsPage })))
+const CommunicationPage = lazy(() => import('@/modules/communication/CommunicationPage').then((m) => ({ default: m.CommunicationPage })))
+const PortionCompletionPage = lazy(() => import('@/modules/portion-completion/PortionCompletionPage').then((m) => ({ default: m.PortionCompletionPage })))
+const ReportsPage = lazy(() => import('@/modules/reports/ReportsPage').then((m) => ({ default: m.ReportsPage })))
+const AuditPage = lazy(() => import('@/modules/audit/AuditPage').then((m) => ({ default: m.AuditPage })))
+const DocumentReviewQueuePage = lazy(() => import('@/modules/document-reviews/DocumentReviewsPage').then((m) => ({ default: m.DocumentReviewQueuePage })))
+const ReviewerAssignmentPage = lazy(() => import('@/modules/document-reviews/DocumentReviewsPage').then((m) => ({ default: m.ReviewerAssignmentPage })))
+const StudentDocumentStatusPage = lazy(() => import('@/modules/document-reviews/DocumentReviewsPage').then((m) => ({ default: m.StudentDocumentStatusPage })))
 
 function MessagePage({ title, message, icon: Icon }: { title: string; message: string; icon: typeof ShieldAlert }) {
   return <main className="page-shell"><div className="app-container py-10"><section className="message-card"><Icon aria-hidden="true" className="size-8 text-warning" /><h1>{title}</h1><p>{message}</p><Link className="text-link" to={ROUTE_PATHS.home}><ArrowLeft className="size-4" /> Return to sign in</Link></section></div></main>

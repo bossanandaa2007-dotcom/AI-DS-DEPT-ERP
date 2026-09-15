@@ -29,7 +29,7 @@ export function SubjectAllocationPage() {
   // One load for the whole page: the board, the directory and the guide panel all read the same
   // snapshot, so a change in any of them is reflected everywhere without a second round trip.
   const load = useCallback(() => academicRepository.loadAcademicData(), [])
-  const resource = useAsyncResource(load)
+  const resource = useAsyncResource(load, 'academicData')
   if (resource.isLoading && !resource.data) return <LoadingState label="Loading Faculty allocations…" />
   if (resource.error) return <ErrorState title="Unable to load Faculty allocations" description={resource.error} />
   const data = resource.data
@@ -118,7 +118,7 @@ function SectionAllocationBoard({ data, reload, canManage }: { data: AcademicDat
         {canManage && <Select className="max-w-xs" value={classFacultyId} onChange={(event) => setClassFacultyId(event.target.value)}><option value="">Select active Faculty</option>{activeFaculty.map((row) => <option key={row.id} value={row.id}>{row.full_name}</option>)}</Select>}
         {canManage && <Button variant="secondary" disabled={saving || !classFacultyId} onClick={() => void saveClassTeacher()}><UserRoundCheck className="size-4" /> {classTeacher ? 'Replace' : 'Assign'}</Button>}
       </div>
-      {notice && <p className="mt-3 text-sm text-success">{notice}</p>}
+      {notice && <p role="status" className="mt-3 text-sm text-success">{notice}</p>}
     </Card>
 
     <Card>
@@ -144,7 +144,7 @@ function SectionAllocationBoard({ data, reload, canManage }: { data: AcademicDat
         <p className="text-sm text-muted">{section ? `Year ${section.year_number} · ${section.name}` : ''}</p>
         <label className="block text-sm font-semibold">Faculty<Select className="mt-1" value={facultyId} onChange={(event) => setFacultyId(event.target.value)}><option value="">Select active Faculty</option>{activeFaculty.filter((row) => !allocationsFor(target.id).some((item) => item.faculty_id === row.id)).map((row) => <option key={row.id} value={row.id}>{row.full_name}</option>)}</Select></label>
         <label className="block text-sm font-semibold">Responsibility<Select className="mt-1" value={type} onChange={(event) => setType(event.target.value as AssignmentType)}><option value="subject_faculty">subject faculty</option><option value="lab_faculty">lab faculty</option></Select><span className="mt-1 block text-xs font-normal text-muted">{target.is_lab ? 'This subject is a lab, so lab faculty is preselected.' : 'Theory subjects normally use subject faculty.'}</span></label>
-        {message && <p className="text-sm text-error">{message}</p>}
+        {message && <p role="alert" className="text-sm text-error">{message}</p>}
         <div className="flex justify-end gap-3 pt-2"><Button variant="secondary" disabled={saving} onClick={() => setTarget(null)}>Cancel</Button><Button disabled={saving} onClick={() => void allocate()}>{saving ? 'Allocating…' : 'Allocate Faculty'}</Button></div>
       </div>}
     </Modal>

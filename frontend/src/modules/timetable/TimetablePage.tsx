@@ -31,7 +31,7 @@ const overlaps = (aStart: string, aEnd: string, bStart: string, bEnd: string) =>
 export function TimetablePage() {
   const { currentUser } = useAuth()
   const load = useCallback(() => academicRepository.loadAcademicData(), [])
-  const resource = useAsyncResource(load)
+  const resource = useAsyncResource(load, 'academicData')
   if (resource.isLoading && !resource.data) return <LoadingState label="Loading timetable…" />
   if (resource.error) return <ErrorState title="Unable to load timetable" description={resource.error} />
   const data = resource.data
@@ -171,7 +171,7 @@ function TimetableBuilder({ data, reload, canManage }: { data: AcademicData; rel
       <Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>
     </div>} />
     {message && !formOpen && !copyOpen && <ErrorState title="Timetable action needs attention" description={message} />}
-    {notice && <Card><p className="text-sm font-medium text-success">{notice}</p></Card>}
+    {notice && <Card><p role="status" className="text-sm font-medium text-success">{notice}</p></Card>}
 
     <Card>
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -237,7 +237,7 @@ function TimetableBuilder({ data, reload, canManage }: { data: AcademicData; rel
           <Field label="Lab (optional)"><Input value={draft.lab} onChange={(event) => setDraft({ ...draft, lab: event.target.value })} placeholder="AI&DS Lab" /></Field>
         </div>
         {facultyClash && <p className="mt-3 text-sm text-warning">{facultyName(draft.facultyId)} already teaches {subject(facultyClash.subject_id)?.code ?? 'another subject'} on {dayNames[facultyClash.day_of_week]} at {hhmm(facultyClash.starts_at)}–{hhmm(facultyClash.ends_at)}. Saving will be rejected.</p>}
-        {message && <p className="mt-3 text-sm text-error">{message}</p>}
+        {message && <p role="alert" className="mt-3 text-sm text-error">{message}</p>}
         <div className="mt-6 flex justify-between gap-3">
           {editing ? <Button variant="danger" disabled={saving} onClick={() => { setFormOpen(false); setDeleting(editing) }}><Trash2 className="size-4" /> Clear slot</Button> : <span />}
           <div className="flex gap-3">
@@ -309,12 +309,12 @@ function ManagerList({ data, entries, onEdit, onDelete, canManage }: { data: Aca
  * period holds one per batch, so every entry is rendered.
  */
 function ReadOnlySlot({ entries, subjectOf, facultyName, sectionLabel, showSection }: { entries: Entry[]; subjectOf: (id: string) => { code: string; name: string } | undefined; facultyName: (id: string | null) => string | null; sectionLabel: (id: string) => string; showSection: boolean }) {
-  if (!entries.length) return <div className="min-h-[4.5rem] rounded-lg border border-dashed border-border" />
+  if (!entries.length) return <div className="h-[7.25rem] rounded-lg border border-dashed border-border" />
   return <div className="space-y-1.5">
     {entries.map((entry) => {
       const info = subjectOf(entry.subject_id)
       const teacher = facultyName(entry.faculty_id)
-      return <div key={entry.id} className="min-h-[4.5rem] rounded-lg border border-border bg-background p-2">
+      return <div key={entry.id} className="h-[7.25rem] overflow-hidden rounded-lg border border-border bg-background p-2">
         <p className="text-xs font-bold text-text">{info?.code ?? '—'}</p>
         <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-text/80" title={info?.name}>{info?.name ?? 'Unknown subject'}</p>
         {teacher && <p className="truncate text-[11px] text-muted" title={teacher}>{teacher}</p>}
@@ -326,7 +326,7 @@ function ReadOnlySlot({ entries, subjectOf, facultyName, sectionLabel, showSecti
 }
 
 /** Weekly day-by-period grid, built from whatever days and periods the entries actually use. */
-function ReadOnlyGrid({ entries, allEntries, subjectOf, facultyName, sectionLabel, showSection }: { entries: Entry[]; allEntries: Entry[]; subjectOf: (id: string) => { code: string; name: string } | undefined; facultyName: (id: string | null) => string | null; sectionLabel: (id: string) => string; showSection: boolean }) {
+function ReadOnlyGrid({ entries, allEntries, subjectOf, facultyName, sectionLabel, showSection, compactMobile = false }: { entries: Entry[]; allEntries: Entry[]; subjectOf: (id: string) => { code: string; name: string } | undefined; facultyName: (id: string | null) => string | null; sectionLabel: (id: string) => string; showSection: boolean; compactMobile?: boolean }) {
   // Keep the week and the period ladder contiguous. A faculty member with no fifth-period
   // class should still see an empty P5 row rather than the grid jumping from P4 to P6, and a
   // free Monday should stay a column. Saturday only appears if something is scheduled on it.
@@ -343,28 +343,57 @@ function ReadOnlyGrid({ entries, allEntries, subjectOf, facultyName, sectionLabe
   }
   const at = (day: number, period: number) => entries.filter((entry) => entry.day_of_week === day && entry.period === period)
 
-  return <Card>
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[52rem] border-separate border-spacing-1.5">
+  return <Card className={compactMobile ? "overflow-hidden p-2 sm:p-4" : undefined}>
+    <div className={`${compactMobile ? "overflow-x-auto [zoom:0.46] min-[390px]:[zoom:0.5] min-[430px]:[zoom:0.54] sm:[zoom:1]" : "overflow-x-auto"}`}>
+      <table className={`${compactMobile ? "min-w-[50rem]" : "min-w-[58rem]"} w-full table-fixed border-separate border-spacing-1.5`}>
+        <colgroup>
+          <col className={compactMobile ? "w-24" : "w-28"} />
+          {days.map((day) => <col key={day} className={compactMobile ? "w-32" : "w-36 sm:w-40"} />)}
+        </colgroup>
         <thead>
           <tr>
             {/* Pinned so the period and its time stay readable while the week scrolls on a phone. */}
-            <th className="sticky left-0 z-10 w-24 bg-surface" />
-            {days.map((day) => <th key={day} className="pb-1 text-xs font-bold uppercase tracking-wide text-muted">{dayNames[day]}</th>)}
+            <th className="sticky left-0 z-10 bg-surface" />
+            {days.map((day) => <th key={day} className="truncate pb-1 text-xs font-bold uppercase tracking-wide text-muted">{dayNames[day]}</th>)}
           </tr>
         </thead>
         <tbody>
           {periods.map((period) => <tr key={period}>
-            <th className="sticky left-0 z-10 bg-surface pr-2 align-top text-left">
+            <th className="sticky left-0 z-10 h-[7.25rem] bg-surface pr-2 align-top text-left">
               <span className="text-sm font-bold text-text">P{period}</span>
               <span className="block text-[11px] font-normal text-muted">{timeOf(period)}</span>
             </th>
-            {days.map((day) => <td key={day} className="align-top">
+            {days.map((day) => <td key={day} className="h-[7.25rem] align-top">
               <ReadOnlySlot entries={at(day, period)} subjectOf={subjectOf} facultyName={facultyName} sectionLabel={sectionLabel} showSection={showSection} />
             </td>)}
           </tr>)}
         </tbody>
       </table>
+    </div>
+  </Card>
+}
+
+function StudentGrid({ entries, allEntries, subjectOf }: { entries: Entry[]; allEntries: Entry[]; subjectOf: (id: string) => { code: string; name: string } | undefined }) {
+  const usedDays = new Set(entries.map((entry) => entry.day_of_week))
+  const lastDay = Math.max(5, ...usedDays)
+  const days = Array.from({ length: lastDay }, (_, index) => index + 1)
+  const lastPeriod = Math.max(...entries.map((entry) => entry.period))
+  const periods = Array.from({ length: lastPeriod }, (_, index) => index + 1)
+  const timeOf = (period: number) => {
+    const match = entries.find((entry) => entry.period === period) ?? allEntries.find((entry) => entry.period === period)
+    return match ? `${hhmm(match.starts_at)}-${hhmm(match.ends_at)}` : ''
+  }
+  const at = (day: number, period: number) => entries.filter((entry) => entry.day_of_week === day && entry.period === period)
+  return <Card className="p-2 sm:p-4">
+    <div className="overflow-x-auto">
+    <table className="min-w-[48rem] table-fixed border-separate border-spacing-1.5">
+      <colgroup><col className="w-20" />{days.map((day) => <col key={day} className="w-32" />)}</colgroup>
+      <thead><tr><th className="sticky left-0 top-0 z-30 bg-surface" />{days.map((day) => <th key={day} className="sticky top-0 z-20 bg-surface pb-1 text-[11px] font-bold uppercase text-muted">{dayNames[day].slice(0, 3)}</th>)}</tr></thead>
+      <tbody>{periods.map((period) => <tr key={period}>
+        <th className="sticky left-0 z-20 bg-surface pr-2 align-top text-left"><span className="text-sm font-bold text-text">P{period}</span><span className="block text-[11px] font-normal leading-4 text-muted">{timeOf(period)}</span></th>
+        {days.map((day) => <td key={day} className="align-top">{at(day, period).map((entry) => <div key={entry.id} className="flex min-h-24 items-center justify-center rounded border border-border bg-background p-2 text-center"><p className="break-words text-xs font-bold leading-4 text-text">{subjectOf(entry.subject_id)?.name ?? 'Subject'}</p></div>)}</td>)}
+      </tr>)}</tbody>
+    </table>
     </div>
   </Card>
 }
@@ -402,7 +431,7 @@ function TimetableReadOnly({ data, reload, role, userId }: { data: AcademicData;
       <Button variant="secondary" onClick={() => setView(view === 'grid' ? 'list' : 'grid')}>{view === 'grid' ? <><List className="size-4" /> List view</> : <><LayoutGrid className="size-4" /> Grid view</>}</Button>
       <Button variant="secondary" onClick={() => void reload()}><RefreshCw className="size-4" /> Refresh</Button>
     </div>} />
-    <Card>
+    {role !== 'student' && <Card>
       <div className="grid gap-3 md:grid-cols-2">
         {/* The faculty filter is only useful where faculty names resolve; for a student the
             list is empty until they are allowed to read their department's staff profiles. */}
@@ -410,12 +439,12 @@ function TimetableReadOnly({ data, reload, role, userId }: { data: AcademicData;
         <Select aria-label="Filter day" value={dayFilter} onChange={(event) => setDayFilter(event.target.value)}><option value="all">All days</option>{dayNames.slice(1).map((day, index) => <option key={day} value={index + 1}>{day}</option>)}</Select>
       </div>
       <p className="mt-3 text-sm text-muted">{visible.length} period{visible.length === 1 ? '' : 's'} shown</p>
-    </Card>
+    </Card>}
 
     {visible.length === 0
       ? <Card><EmptyState title="No timetable entries" description="No entries are available for your current access and filters." /></Card>
       : view === 'grid'
-        ? <ReadOnlyGrid entries={visible} allEntries={data.timetable} subjectOf={subject} facultyName={facultyName} sectionLabel={sectionLabel} showSection={showSection} />
+        ? role === 'student' ? <><div className="md:hidden"><StudentGrid entries={visible} allEntries={data.timetable} subjectOf={subject} /></div><div className="hidden md:block"><ReadOnlyGrid entries={visible} allEntries={data.timetable} subjectOf={subject} facultyName={facultyName} sectionLabel={sectionLabel} showSection={showSection} /></div></> : <ReadOnlyGrid entries={visible} allEntries={data.timetable} subjectOf={subject} facultyName={facultyName} sectionLabel={sectionLabel} showSection={showSection} compactMobile />
         : <Card>
       <DataTable rows={[...visible].sort((a, b) => a.day_of_week - b.day_of_week || a.period - b.period)} empty={<EmptyState title="No timetable entries" description="No entries are available for your current access and filters." />} columns={[
         { header: 'Day / time', render: (entry) => <div><p className="font-semibold">{dayNames[entry.day_of_week]} · P{entry.period}</p><p className="text-xs text-muted">{hhmm(entry.starts_at)} – {hhmm(entry.ends_at)}</p></div> },

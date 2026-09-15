@@ -18,7 +18,7 @@ const actionTone = (action: string): 'primary' | 'success' | 'warning' | 'muted'
 
 export function AuditPage() {
   const load = useCallback(() => departmentOperationsRepository.loadAudit(), [])
-  const resource = useAsyncResource(load)
+  const resource = useAsyncResource(load, 'auditData')
   const [actorId, setActorId] = useState('all')
   const [action, setAction] = useState('all')
   const [entity, setEntity] = useState('all')

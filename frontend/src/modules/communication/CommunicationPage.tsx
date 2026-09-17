@@ -61,7 +61,9 @@ export function CommunicationPage({ sections = allSections }: { sections?: Commu
 
   const records = resource.data
   const role = currentUser?.role
-  const canPublish = role === USER_ROLES.superAdmin || role === USER_ROLES.faculty
+  // Section 6.1 of the pilot proposal names announcement publishing as an HOD duty; only
+  // complaint resolution was left unassigned to HOD there.
+  const canPublish = role === USER_ROLES.superAdmin || role === USER_ROLES.hod || role === USER_ROLES.faculty
   const canSubmitComplaint = role === USER_ROLES.student || role === USER_ROLES.faculty
   const canReviewComplaints = role === USER_ROLES.superAdmin
   // HOD keeps read access to the complaints queue for department oversight; only the Review

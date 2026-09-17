@@ -233,4 +233,18 @@ export const attendanceRepository = {
     const { error } = await client().from('staff_attendance').update({ status, notes: notes?.trim() || null }).eq('id', recordId)
     message(error, 'Unable to update staff attendance.')
   },
+
+  /** Super Admin only. Seals every session for the section so no Faculty or HOD can edit it again. */
+  async lockAttendanceForSection(sectionId: string): Promise<number> {
+    const { data, error } = await client().rpc('lock_attendance_for_section', { p_section_id: sectionId })
+    message(error, 'Unable to lock this class’s attendance.')
+    return data ?? 0
+  },
+
+  /** Super Admin only. Reverses a lock placed by mistake; does not restore a Faculty finalize. */
+  async unlockAttendanceForSection(sectionId: string): Promise<number> {
+    const { data, error } = await client().rpc('unlock_attendance_for_section', { p_section_id: sectionId })
+    message(error, 'Unable to unlock this class’s attendance.')
+    return data ?? 0
+  },
 }

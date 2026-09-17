@@ -314,10 +314,56 @@ function AssessmentAdminMarks({ data, reload, canManage }: ViewProps & { canMana
       { header: 'Status', render: (row) => <Badge tone={tone(row.status)}>{readable(row.status)}</Badge> },
       { header: canManage ? 'Manage' : 'State', render: (row) => !canManage ? <span className="text-muted">Read only</span> : row.status === 'finalized' ? <span className="text-muted">Locked</span> : <div className="flex flex-wrap gap-2"><Button className="min-h-8 px-2" variant="ghost" onClick={() => openEdit(row)}><Pencil className="size-4" /> Edit</Button><Button className="min-h-8 px-2" variant="secondary" onClick={() => setFinalizeTarget(row)}><LockKeyhole className="size-4" /> Finalize</Button></div> },
     ]} /></div></Card>
+    {canManage && <ClassLockCard sections={data.sections} reload={reload} />}
     <CorrectionReview data={data} corrections={corrections} reload={reload} reviewer={canManage ? 'manager' : 'monitor'} />
     <AssessmentDialog isOpen={formOpen} editing={editing} draft={draft} options={options} data={data} saving={saving} onChange={setDraft} onClose={() => setFormOpen(false)} onSave={save} />
     <ConfirmDialog isOpen={Boolean(finalizeTarget)} title="Finalize and lock marks?" description="Every active enrolled student must already have a mark or Absent record. Finalized records are read-only and later changes require an approved correction." confirmLabel={saving ? 'Finalizing…' : 'Finalize and lock'} onCancel={() => setFinalizeTarget(null)} onConfirm={() => void finalize()} />
   </div>
+}
+
+/**
+ * Super Admin only. Finalizes or reopens every assessment for one section in a single action —
+ * a section already belongs to exactly one academic year, so "class and year" is just "section"
+ * here. Unlike the single-assessment Finalize button above (which only the assigned Faculty
+ * member may use), this bulk action is Super Admin-exclusive at the database level.
+ */
+function ClassLockCard({ sections, reload }: { sections: MarksData['sections']; reload: () => Promise<void> }) {
+  const [sectionId, setSectionId] = useState(sections[0]?.id ?? '')
+  const [confirming, setConfirming] = useState<'lock' | 'unlock' | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState<FeedbackValue | null>(null)
+  const label = (id: string) => { const section = sections.find((row) => row.id === id); return section ? `Year ${section.year_number} · ${section.name}` : '—' }
+
+  const run = async (action: 'lock' | 'unlock') => {
+    setBusy(true); setFeedback(null)
+    try {
+      const count = action === 'lock' ? await marksRepository.lockMarksForSection(sectionId) : await marksRepository.unlockMarksForSection(sectionId)
+      setFeedback({ text: `${action === 'lock' ? 'Locked' : 'Unlocked'} ${count} assessment${count === 1 ? '' : 's'} for ${label(sectionId)}.`, error: false })
+      await reload()
+    } catch (error) {
+      setFeedback({ text: error instanceof Error ? error.message : `Unable to ${action} this class's marks.`, error: true })
+    } finally {
+      setBusy(false); setConfirming(null)
+    }
+  }
+
+  return <Card>
+    <div className="flex items-start gap-3">
+      <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-warning/10 text-warning"><LockKeyhole className="size-5" aria-hidden="true" /></span>
+      <div>
+        <h2 className="font-bold text-text">Lock a class's marks</h2>
+        <p className="mt-1 text-sm text-muted">Finalizes every assessment for one section so no Faculty can edit marks again. Use this at the end of a term or when marks for a class are settled.</p>
+      </div>
+    </div>
+    <div className="mt-4 flex flex-wrap items-end gap-3">
+      <label className="text-sm font-semibold text-text">Section<Select className="mt-1 min-w-56" value={sectionId} onChange={(event) => { setSectionId(event.target.value); setFeedback(null) }}>{sections.map((row) => <option key={row.id} value={row.id}>{label(row.id)}</option>)}</Select></label>
+      <Button variant="danger" disabled={!sectionId || busy} onClick={() => setConfirming('lock')}><LockKeyhole className="size-4" /> Lock class</Button>
+      <Button variant="secondary" disabled={!sectionId || busy} onClick={() => setConfirming('unlock')}>Unlock class</Button>
+    </div>
+    {feedback && <Feedback value={feedback} />}
+    <ConfirmDialog isOpen={confirming === 'lock'} title="Lock this class's marks?" description={`Every assessment for ${label(sectionId)} will be finalized. Faculty will no longer be able to enter or correct marks for this section. This can be undone with Unlock class.`} confirmLabel="Lock class" onCancel={() => setConfirming(null)} onConfirm={() => void run('lock')} />
+    <ConfirmDialog isOpen={confirming === 'unlock'} title="Unlock this class's marks?" description={`Every finalized assessment for ${label(sectionId)} returns to draft. Faculty will be able to edit marks again.`} confirmLabel="Unlock class" onCancel={() => setConfirming(null)} onConfirm={() => void run('unlock')} />
+  </Card>
 }
 
 function CorrectionReview({ data, corrections, reload, reviewer }: { data: MarksData; corrections: MarkCorrectionRow[]; reload: () => Promise<void>; reviewer: 'faculty' | 'manager' | 'monitor' }) {

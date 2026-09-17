@@ -471,6 +471,8 @@ function DepartmentAttendance({ data, reload, userId, canManage }: ViewProps & {
       {openSessions.length > 0 && <p className="mt-2 text-sm text-warning">{openSessions.length} session{openSessions.length === 1 ? '' : 's'} still open or in draft — not yet finalized by Faculty.</p>}
     </section>
 
+    {canManage && <ClassLockCard sections={data.sections} reload={reload} />}
+
     <Card>
       <h2 className="font-bold text-text">Section-wise attendance</h2>
       <div className="mt-4"><DataTable rows={sectionRows} empty={<EmptyState title="No sections" />} columns={[
@@ -535,6 +537,53 @@ function DepartmentAttendance({ data, reload, userId, canManage }: ViewProps & {
       </>}
     </Modal>
   </div>
+}
+
+/**
+ * Super Admin only. Seals or reopens every attendance session for one section in a single
+ * action — a section already belongs to exactly one academic year, so "class and year" is just
+ * "section" here. Sealed sessions reject writes from everyone, including a direct table edit by
+ * Super Admin, so this is a deliberate, rarely-used action rather than a routine one.
+ */
+function ClassLockCard({ sections, reload }: { sections: AttendanceData['sections']; reload: () => Promise<void> }) {
+  const [sectionId, setSectionId] = useState(sections[0]?.id ?? '')
+  const [confirming, setConfirming] = useState<'lock' | 'unlock' | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState('')
+  const [error, setError] = useState('')
+  const label = (id: string) => { const section = sections.find((row) => row.id === id); return section ? `Year ${section.year_number} · ${section.name}` : '—' }
+
+  const run = async (action: 'lock' | 'unlock') => {
+    setBusy(true); setError(''); setFeedback('')
+    try {
+      const count = action === 'lock' ? await attendanceRepository.lockAttendanceForSection(sectionId) : await attendanceRepository.unlockAttendanceForSection(sectionId)
+      setFeedback(`${action === 'lock' ? 'Locked' : 'Unlocked'} ${count} session${count === 1 ? '' : 's'} for ${label(sectionId)}.`)
+      await reload()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : `Unable to ${action} this class's attendance.`)
+    } finally {
+      setBusy(false); setConfirming(null)
+    }
+  }
+
+  return <Card>
+    <div className="flex items-start gap-3">
+      <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-warning/10 text-warning"><LockKeyhole className="size-5" aria-hidden="true" /></span>
+      <div>
+        <h2 className="font-bold text-text">Lock a class's attendance</h2>
+        <p className="mt-1 text-sm text-muted">Seals every attendance session for one section so no Faculty can edit it again, even a session already finalized. Use this at the end of a term or when attendance for a class is settled.</p>
+      </div>
+    </div>
+    <div className="mt-4 flex flex-wrap items-end gap-3">
+      <label className="text-sm font-semibold text-text">Section<Select className="mt-1 min-w-56" value={sectionId} onChange={(event) => { setSectionId(event.target.value); setFeedback(''); setError('') }}>{sections.map((row) => <option key={row.id} value={row.id}>{label(row.id)}</option>)}</Select></label>
+      <Button variant="danger" disabled={!sectionId || busy} onClick={() => setConfirming('lock')}><LockKeyhole className="size-4" /> Lock class</Button>
+      <Button variant="secondary" disabled={!sectionId || busy} onClick={() => setConfirming('unlock')}>Unlock class</Button>
+    </div>
+    {feedback && <p role="status" className="mt-3 text-sm font-medium text-success">{feedback}</p>}
+    {error && <p role="alert" className="mt-3 text-sm text-error">{error}</p>}
+    <ConfirmDialog isOpen={confirming === 'lock'} title="Lock this class's attendance?" description={`Every attendance session for ${label(sectionId)} will be sealed. Faculty will no longer be able to open, submit, or correct attendance for this section. This can be undone with Unlock class.`} confirmLabel="Lock class" onCancel={() => setConfirming(null)} onConfirm={() => void run('lock')} />
+    <ConfirmDialog isOpen={confirming === 'unlock'} title="Unlock this class's attendance?" description={`Every locked session for ${label(sectionId)} returns to open. Faculty will be able to edit attendance again.`} confirmLabel="Unlock class" onCancel={() => setConfirming(null)} onConfirm={() => void run('unlock')} />
+  </Card>
 }
 
 function StaffManagementCard({ data, rows, reload, canManage }: { data: AttendanceData; rows: StaffAttendanceRow[]; reload: () => Promise<void>; canManage: boolean }) {

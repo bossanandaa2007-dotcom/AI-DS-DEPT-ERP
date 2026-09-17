@@ -1728,6 +1728,22 @@ export type Database = {
         Returns: undefined
       }
       finalize_marks: { Args: { p_assessment_id: string }; Returns: undefined }
+      lock_attendance_for_section: {
+        Args: { p_section_id: string }
+        Returns: number
+      }
+      lock_marks_for_section: {
+        Args: { p_section_id: string }
+        Returns: number
+      }
+      unlock_attendance_for_section: {
+        Args: { p_section_id: string }
+        Returns: number
+      }
+      unlock_marks_for_section: {
+        Args: { p_section_id: string }
+        Returns: number
+      }
       has_role: {
         Args: { roles: Database["public"]["Enums"]["app_role"][] }
         Returns: boolean

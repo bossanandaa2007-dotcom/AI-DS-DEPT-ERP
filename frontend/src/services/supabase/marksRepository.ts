@@ -267,4 +267,18 @@ export const marksRepository = {
     const { error } = await client().rpc('approve_mark_correction', args)
     fail(error, 'Unable to review the mark correction.')
   },
+
+  /** Super Admin only. Finalizes every assessment for the section so no Faculty can edit marks again. */
+  async lockMarksForSection(sectionId: string): Promise<number> {
+    const { data, error } = await client().rpc('lock_marks_for_section', { p_section_id: sectionId })
+    fail(error, 'Unable to lock this class’s marks.')
+    return data ?? 0
+  },
+
+  /** Super Admin only. Reverses a lock placed by mistake. */
+  async unlockMarksForSection(sectionId: string): Promise<number> {
+    const { data, error } = await client().rpc('unlock_marks_for_section', { p_section_id: sectionId })
+    fail(error, 'Unable to unlock this class’s marks.')
+    return data ?? 0
+  },
 }
